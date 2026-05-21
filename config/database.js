@@ -12,17 +12,28 @@ require("dotenv").config()
 //   connectionLimit: 10,
 //   queueLimit: 0,
 // }
+// root:xwFhUnSPQGmyDMDWWHRIRKevBCXGXrre@gondola.proxy.rlwy.net:35644/railway
 
 const dbConfig = {
-  host: process.env.DB_HOST || "localhost",
+  host: process.env.DB_HOST || "gondola.proxy.rlwy.net",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "Ajay@7039",
+  password: process.env.DB_PASSWORD || "xwFhUnSPQGmyDMDWWHRIRKevBCXGXrre",
   database: process.env.DB_NAME || "vasify_crm",
-  port: process.env.DB_PORT || 3306,
+  port: process.env.DB_PORT || 35644,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
 }
+// const dbConfig = {
+//   host: process.env.DB_HOST || "localhost",
+//   user: process.env.DB_USER || "root",
+//   password: process.env.DB_PASSWORD || "Ajay@7039",
+//   database: process.env.DB_NAME || "vasify_crm",
+//   port: process.env.DB_PORT || 3306,
+//   waitForConnections: true,
+//   connectionLimit: 10,
+//   queueLimit: 0,
+// }
 
 
 
