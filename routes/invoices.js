@@ -1,9 +1,11 @@
-// const { v4: uuidv4 }      = require("uuid");
-// const PDFDocument          = require("pdfkit");
-// const express              = require("express");
+
+
+// const { v4: uuidv4 }             = require("uuid");
+// const PDFDocument                = require("pdfkit");
+// const express                    = require("express");
 // const { body, validationResult } = require("express-validator");
-// const { pool }             = require("../config/database");
-// const { authenticateToken } = require("../middleware/auth");
+// const { pool }                   = require("../config/database");
+// const { authenticateToken }      = require("../middleware/auth");
 
 // const router = express.Router();
 
@@ -15,10 +17,7 @@
 //   if (!value) return null;
 //   const d = value instanceof Date ? value : new Date(value);
 //   if (Number.isNaN(d.getTime())) return null;
-//   const y   = d.getFullYear();
-//   const m   = String(d.getMonth() + 1).padStart(2, "0");
-//   const day = String(d.getDate()).padStart(2, "0");
-//   return `${y}-${m}-${day}`;
+//   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 // };
 
 // const handleValidation = (req, res) => {
@@ -30,46 +29,47 @@
 //   return false;
 // };
 
-// /**
-//  * Generate a Renalease invoice number: RNL-YYYYMM-XXXX
-//  * e.g. RNL-202503-0042
-//  */
-// const generateRNLNumber = async (connection) => {
-//   const now   = new Date();
-//   const ym    = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-//   const prefix = `RNL-${ym}-`;
-
-//   // Find the highest sequence this month
-//   const [rows] = await connection.execute(
-//     `SELECT invoice_number FROM invoices
-//      WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1`,
+// // ── Generate invoice number: INV-YYYYMM-XXXX
+// // If the frontend sends its own number AND it's not a duplicate, honour it.
+// const generateInvNumber = async (conn) => {
+//   const now    = new Date();
+//   const ym     = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+//   const prefix = `INV-${ym}-`;
+//   const [rows] = await conn.execute(
+//     `SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1`,
 //     [`${prefix}%`]
 //   );
-
-//   let seq = 1;
-//   if (rows.length > 0) {
-//     const last = rows[0].invoice_number;  // e.g. RNL-202503-0041
-//     const parts = last.split("-");
-//     seq = (parseInt(parts[parts.length - 1], 10) || 0) + 1;
-//   }
+//   const seq = rows.length
+//     ? (parseInt(rows[0].invoice_number.split("-").pop(), 10) || 0) + 1
+//     : 1;
 //   return `${prefix}${String(seq).padStart(4, "0")}`;
 // };
 
-// const invoiceFieldMap = {
-//   customerId:         "customer_id",
-//   amount:             "amount",
-//   tax:                "tax",
-//   total:              "total",
-//   status:             "status",
-//   issueDate:          "issue_date",
-//   dueDate:            "due_date",
-//   paidDate:           "paid_date",
-//   notes:              "notes",
-//   isRecurring:        "is_recurring",
-//   recurringFrequency: "recurring_frequency",
-//   recurringCycles:    "recurring_cycles",
-//   recurringStartDate: "recurring_start_date",
-//   recurringEndDate:   "recurring_end_date",
+// // camelCase → snake_case map for UPDATE (only fields that exist after migration)
+// const FIELD_MAP = {
+//   customerId:              "customer_id",
+//   amount:                  "amount",
+//   tax:                     "tax",
+//   gstAmount:               "gst_amount",
+//   total:                   "total",
+//   status:                  "status",
+//   issueDate:               "issue_date",
+//   dueDate:                 "due_date",
+//   paidDate:                "paid_date",
+//   notes:                   "notes",
+//   poNumber:                "po_number",
+//   terms:                   "terms",
+//   placeOfSupply:           "place_of_supply",
+//   customerName:            "customer_name_override",
+//   customerEmail:           "customer_email_override",
+//   customerPhone:           "customer_phone_override",
+//   customerCompany:         "customer_company_override",
+//   customerAddress:         "customer_address_override",
+//   isRecurring:             "is_recurring",
+//   recurringFrequency:      "recurring_frequency",
+//   recurringCycles:         "recurring_cycles",
+//   recurringStartDate:      "recurring_start_date",
+//   recurringEndDate:        "recurring_end_date",
 // };
 
 // // ─── ACCESS CONTROL ───────────────────────────────────────────────────────────
@@ -80,87 +80,427 @@
 //     `SELECT i.id FROM invoices i
 //      INNER JOIN customers c ON i.customer_id = c.id
 //      WHERE i.id = ? AND c.assigned_to = ?`,
-//     sanitize(invoiceId, req.user.userId)
+//     sanitize(invoiceId, req.user.id)
 //   );
-//   if (rows.length === 0) {
+//   if (!rows.length)
 //     return { ok: false, response: res.status(403).json({ error: "Access denied" }) };
-//   }
 //   return { ok: true };
 // };
 
-// // ─── GET ALL INVOICES ─────────────────────────────────────────────────────────
+// // ─── AMOUNT IN WORDS ──────────────────────────────────────────────────────────
+
+// function amountInWords(amount) {
+//   const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+//                  "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+//                  "Seventeen","Eighteen","Nineteen"];
+//   const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+//   function convert(n) {
+//     if (!n) return "";
+//     if (n < 20)       return ones[n] + " ";
+//     if (n < 100)      return tens[Math.floor(n / 10)] + " " + ones[n % 10] + " ";
+//     if (n < 1000)     return ones[Math.floor(n / 100)] + " Hundred " + convert(n % 100);
+//     if (n < 100000)   return convert(Math.floor(n / 1000))    + "Thousand " + convert(n % 1000);
+//     if (n < 10000000) return convert(Math.floor(n / 100000))  + "Lakh "     + convert(n % 100000);
+//     return               convert(Math.floor(n / 10000000)) + "Crore "    + convert(n % 10000000);
+//   }
+//   const rupees = Math.floor(amount);
+//   const paise  = Math.round((amount - rupees) * 100);
+//   let out = "Indian Rupee " + (convert(rupees).trim() || "Zero");
+//   if (paise) out += " and " + convert(paise).trim() + " Paise";
+//   return out + " Only";
+// }
+
+// // ─── SELECT HELPER — always use COALESCE override → live customer data ─────────
+
+// const INV_SELECT = `
+//   SELECT
+//     i.*,
+//     COALESCE(i.customer_name_override,    c.name)    AS customer_name,
+//     COALESCE(i.customer_company_override, c.company) AS customer_company,
+//     COALESCE(i.customer_email_override,   c.email)   AS customer_email,
+//     COALESCE(i.customer_phone_override,   c.phone)   AS customer_phone,
+//     COALESCE(i.customer_address_override,
+//       CONCAT_WS(', ', NULLIF(c.address,''), NULLIF(c.city,''),
+//                 NULLIF(c.state,''), NULLIF(c.zip_code,''), NULLIF(c.country,'')))
+//                                                       AS customer_address
+//   FROM invoices i
+//   LEFT JOIN customers c ON i.customer_id = c.id
+// `;
+
+// // ─── PDF GENERATION ───────────────────────────────────────────────────────────
+// // Exactly matches Vasify Technologies sample invoice (INV-000076):
+// // Logo | Company header | TAX INVOICE title
+// // Meta box | Bill To / Ship To | Subject
+// // Items table (HSN/SAC, Qty, Rate, CGST%, CGST Amt, SGST%, SGST Amt, Amount)
+// // Totals | Amount in words | Notes | T&C | Payment details | Footer
+
+// router.post("/:id/download", authenticateToken, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+
+//     const access = await canAccessInvoice(req, res, id);
+//     if (!access.ok) return;
+
+//     const [invRows] = await pool.execute(
+//       INV_SELECT + " WHERE i.id = ?",
+//       sanitize(id)
+//     );
+//     if (!invRows.length) return res.status(404).json({ error: "Invoice not found" });
+
+//     const [items] = await pool.execute(
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
+//       sanitize(id)
+//     );
+
+//     const inv      = invRows[0];
+//     const subtotal = Number(inv.amount || 0);
+//     const gstRate  = Number(inv.tax    || 18);
+//     const halfRate = gstRate / 2;
+//     const cgstAmt  = (subtotal * halfRate) / 100;
+//     const sgstAmt  = cgstAmt;
+//     const totalAmt = Number(inv.total  || subtotal + cgstAmt + sgstAmt);
+//     const balDue   = inv.status === "paid" ? 0 : totalAmt;
+//     const logoB64  = req.body?.logoBase64 ?? null;
+
+//     const termsLabel = {
+//       net_7: "Net 7", net_15: "Net 15", net_30: "Net 30",
+//       net_45: "Net 45", net_60: "Net 60",
+//     }[inv.terms] || "Due on Receipt";
+
+//     const fmtD = (v) => {
+//       if (!v) return "—";
+//       const d = new Date(v);
+//       return isNaN(d.getTime()) ? "—"
+//         : d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+//     };
+//     const fmtN = (n) => Number(n || 0).toFixed(2);
+
+//     // ── PDFKit ────────────────────────────────────────────────────────────────
+//     const doc = new PDFDocument({ size: "A4", margin: 0, autoFirstPage: true });
+//     res.setHeader("Content-Type", "application/pdf");
+//     res.setHeader("Content-Disposition",
+//       `attachment; filename=invoice-${inv.invoice_number || "NA"}.pdf`);
+//     doc.pipe(res);
+
+//     const DARK  = "#1A1A1A", GRAY = "#555555", LGRAY = "#888888";
+//     const BORD  = "#CCCCCC", BGH  = "#F5F5F5", BGALT = "#FAFAFA";
+//     const BGTOT = "#EEEEEE", BGBAL = "#E8F5E9";
+
+//     const PW = 595.28, PH = 841.89, ML = 30, MR = 30, CW = PW - ML - MR;
+//     let y = 30;
+
+//     // ── 1. Logo + company ─────────────────────────────────────────────────────
+//     if (logoB64) {
+//       try {
+//         const raw = logoB64.includes(",") ? logoB64.split(",")[1] : logoB64;
+//         doc.image(Buffer.from(raw, "base64"), ML, y, { fit: [120, 55] });
+//       } catch (e) { console.warn("Logo render:", e.message); }
+//     }
+
+//     const CX = ML + 130;
+//     doc.fontSize(11).font("Helvetica-Bold").fillColor(DARK)
+//        .text("Vasify Technologies Pvt. Ltd.", CX, y, { width: CW - 130 });
+//     y += 14;
+//     doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+//        .text("Axiom Milan CHS, 607, 22 Datta Mandir road\nDhanakurwadi, Kandivali West.\nMumbai Maharashtra 400067\nIndia",
+//          CX, y, { width: CW - 130, lineGap: 1 });
+//     y += 42;
+//     ["Company ID : U62011MH2024PTC421417","GSTIN: 27AAKCV0353N1ZW","PAN: AAKCV0353N",
+//      "Tax ID ::MUMV33878F","www.vasifytech.com"].forEach(l => {
+//       doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, CX, y, { width: CW - 130 });
+//       y += 10;
+//     });
+
+//     doc.fontSize(26).font("Helvetica-Bold").fillColor(DARK)
+//        .text("TAX INVOICE", PW - MR - 180, 30, { align: "right", width: 180 });
+
+//     y = Math.max(y, 122) + 4;
+
+//     // ── 2. Meta box ───────────────────────────────────────────────────────────
+//     const MBH = 68, HW = CW / 2;
+//     doc.rect(ML, y, CW, MBH).stroke(BORD);
+//     doc.moveTo(ML + HW, y).lineTo(ML + HW, y + MBH).stroke(BORD);
+//     doc.moveTo(ML, y + 14).lineTo(ML + CW, y + 14).stroke(BORD);
+
+//     // Left col
+//     const LR = [
+//       ["#",            inv.invoice_number || "—"],
+//       ["Invoice Date",  fmtD(inv.issue_date || inv.created_at)],
+//       ["Terms",         termsLabel],
+//       ["Due Date",      fmtD(inv.due_date)],
+//       ["P.O.#",         inv.po_number || "—"],
+//     ];
+//     LR.forEach(([lbl, val], i) => {
+//       const ry = y + 16 + i * 10;
+//       doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + 4, ry, { width: HW * 0.42 });
+//       doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW * 0.44, ry, { width: HW * 0.54, lineBreak: false });
+//     });
+
+//     // Right col header
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY)
+//        .text("Place Of Supply", ML + HW + 4, y + 4, { width: 70 });
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text(`: ${inv.place_of_supply || "Maharashtra (27)"}`, ML + HW + 76, y + 4, { width: HW - 80 });
+
+//     [["#", inv.invoice_number || "—"],
+//      ["Invoice Date", fmtD(inv.issue_date || inv.created_at)],
+//      ["Terms", termsLabel],
+//      ["Due Date", fmtD(inv.due_date)]].forEach(([lbl, val], i) => {
+//       const ry = y + 16 + i * 11;
+//       doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + HW + 4, ry, { width: 58 });
+//       doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW + 64, ry, { width: HW - 68, lineBreak: false });
+//     });
+
+//     y += MBH + 6;
+
+//     // ── 3. Bill To / Ship To ──────────────────────────────────────────────────
+//     const AH = 86, AW = HW - 3, SX = ML + HW + 3;
+//     const addrLines = [
+//       inv.customer_company || null,
+//       inv.customer_address || null,
+//       inv.customer_email ? `Email: ${inv.customer_email}` : null,
+//       inv.customer_phone ? `Phone: ${inv.customer_phone}` : null,
+//     ].filter(Boolean);
+
+//     const drawAddrBox = (ox, title) => {
+//       doc.rect(ox, y, AW, AH).stroke(BORD);
+//       doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY).text(title, ox + 6, y + 5);
+//       doc.moveTo(ox, y + 14).lineTo(ox + AW, y + 14).stroke(BORD);
+//       let ay = y + 18;
+//       doc.fontSize(9).font("Helvetica-Bold").fillColor(DARK)
+//          .text(inv.customer_name || "—", ox + 6, ay, { width: AW - 12 });
+//       ay += 13;
+//       addrLines.forEach(l => {
+//         doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+//            .text(l, ox + 6, ay, { width: AW - 12, lineBreak: false });
+//         ay += 11;
+//       });
+//     };
+//     drawAddrBox(ML, "Bill To");
+//     drawAddrBox(SX, "Ship To");
+//     y += AH + 6;
+
+//     // ── 4. Subject line ───────────────────────────────────────────────────────
+//     const subject = inv.po_number || null;
+//     if (subject) {
+//       doc.rect(ML, y, CW, 22).stroke(BORD);
+//       doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY).text("Subject :", ML + 6, y + 7);
+//       doc.fontSize(7.5).font("Helvetica").fillColor(DARK)
+//          .text(subject, ML + 58, y + 7, { width: CW - 64, lineBreak: false });
+//       y += 28;
+//     }
+
+//     // ── 5. Items table ────────────────────────────────────────────────────────
+//     // Widths must total CW (535.28)
+//     const CWS = { sr:22, desc:143, hsn:42, qty:28, rate:55, cp:25, ca:45, sp:25, sa:45, amt:0 };
+//     CWS.amt = CW - CWS.sr - CWS.desc - CWS.hsn - CWS.qty - CWS.rate - CWS.cp - CWS.ca - CWS.sp - CWS.sa;
+
+//     const CXS = {};
+//     let ax = ML;
+//     for (const [k, w] of Object.entries(CWS)) { CXS[k] = ax; ax += w; }
+
+//     const vLines = (fy, ty) =>
+//       Object.values(CXS).slice(1).forEach(x => doc.moveTo(x, fy).lineTo(x, ty).stroke(BORD));
+
+//     const HDR_H = 28;
+//     doc.rect(ML, y, CW, HDR_H).fill(BGH).stroke(BORD);
+//     vLines(y, y + HDR_H);
+
+//     const cgstSpan = CWS.cp + CWS.ca, sgstSpan = CWS.sp + CWS.sa;
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text("CGST", CXS.cp, y + 3, { width: cgstSpan, align: "center" });
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text("SGST", CXS.sp, y + 3, { width: sgstSpan, align: "center" });
+//     doc.moveTo(CXS.cp, y + 13).lineTo(CXS.sp + sgstSpan, y + 13).stroke(BORD);
+
+//     const HL = y + 15;
+//     doc.fontSize(6).font("Helvetica-Bold").fillColor(DARK);
+//     doc.text("#",                 CXS.sr,   HL, { width: CWS.sr,        align: "center" });
+//     doc.text("Item & Description",CXS.desc, HL, { width: CWS.desc,      align: "left"   });
+//     doc.text("HSN\n/SAC",         CXS.hsn,  HL, { width: CWS.hsn,       align: "center" });
+//     doc.text("Qty",               CXS.qty,  HL, { width: CWS.qty,       align: "center" });
+//     doc.text("Rate",              CXS.rate, HL, { width: CWS.rate - 3,  align: "right"  });
+//     doc.text("%",                 CXS.cp,   HL, { width: CWS.cp,        align: "center" });
+//     doc.text("Amt",               CXS.ca,   HL, { width: CWS.ca - 3,    align: "right"  });
+//     doc.text("%",                 CXS.sp,   HL, { width: CWS.sp,        align: "center" });
+//     doc.text("Amt",               CXS.sa,   HL, { width: CWS.sa - 3,    align: "right"  });
+//     doc.text("Amount",            CXS.amt,  HL, { width: CWS.amt - 3,   align: "right"  });
+
+//     y += HDR_H;
+
+//     const tableRows = items.length
+//       ? items
+//       : [{ description: "Service Charges", quantity: 1, rate: subtotal, amount: subtotal, hsn: "" }];
+
+//     tableRows.forEach((item, idx) => {
+//       const ra = Number(item.amount || 0);
+//       const rq = Number(item.quantity || 1);
+//       const rr = Number(item.rate || ra / Math.max(rq, 1));
+//       const rc = (ra * halfRate) / 100;
+//       const RH = 22;
+
+//       if (idx % 2 === 1) doc.rect(ML, y, CW, RH).fill(BGALT);
+//       doc.rect(ML, y, CW, RH).stroke(BORD);
+//       vLines(y, y + RH);
+
+//       const cy = y + 7;
+//       doc.fillColor(DARK).fontSize(7).font("Helvetica");
+//       doc.text(String(idx + 1),               CXS.sr,    cy, { width: CWS.sr,       align: "center" });
+//       doc.text(item.description || "Service", CXS.desc+3, cy, { width: CWS.desc - 6 });
+//       doc.text(item.hsn || "998313",          CXS.hsn,   cy, { width: CWS.hsn,      align: "center" });
+//       doc.text(String(rq),                    CXS.qty,   cy, { width: CWS.qty,      align: "center" });
+//       doc.text(fmtN(rr),                      CXS.rate,  cy, { width: CWS.rate - 3, align: "right"  });
+//       doc.text(`${halfRate}%`,                CXS.cp,    cy, { width: CWS.cp,       align: "center" });
+//       doc.text(fmtN(rc),                      CXS.ca,    cy, { width: CWS.ca - 3,   align: "right"  });
+//       doc.text(`${halfRate}%`,                CXS.sp,    cy, { width: CWS.sp,       align: "center" });
+//       doc.text(fmtN(rc),                      CXS.sa,    cy, { width: CWS.sa - 3,   align: "right"  });
+//       doc.font("Helvetica-Bold")
+//          .text(fmtN(ra),                      CXS.amt,   cy, { width: CWS.amt - 3,  align: "right"  });
+
+//       y += RH;
+//     });
+
+//     y += 8;
+
+//     // ── 6. Totals block ───────────────────────────────────────────────────────
+//     const TW = 195, TX = ML + CW - TW, LW = 110, VX = TX + LW, VW = TW - LW - 4;
+
+//     const totRow = (lbl, val, bold = false, bg = null) => {
+//       if (bg) doc.rect(TX, y, TW, 18).fill(bg);
+//       doc.rect(TX, y, TW, 18).stroke(BORD);
+//       doc.moveTo(VX, y).lineTo(VX, y + 18).stroke(BORD);
+//       const sz = bold ? 8.5 : 8, fn = bold ? "Helvetica-Bold" : "Helvetica";
+//       doc.fontSize(sz).font(fn).fillColor(DARK).text(lbl, TX + 3, y + 4, { width: LW - 3 });
+//       doc.fontSize(sz).font(fn).fillColor(DARK).text(val, VX + 2, y + 4, { width: VW, align: "right" });
+//       y += 18;
+//     };
+
+//     totRow("Sub Total",                    fmtN(subtotal));
+//     totRow(`CGST${halfRate} (${halfRate}%)`, fmtN(cgstAmt));
+//     totRow(`SGST${halfRate} (${halfRate}%)`, fmtN(sgstAmt));
+//     totRow("Total",      `\u20B9${fmtN(totalAmt)}`, true, BGTOT);
+//     totRow("Balance Due",`\u20B9${fmtN(balDue)}`,   true, BGBAL);
+
+//     y += 10;
+
+//     // ── 7. Amount in words + Notes ────────────────────────────────────────────
+//     const LCW = CW * 0.62;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Total In Words", ML, y);
+//     y += 12;
+//     doc.fontSize(7.5).font("Helvetica-Oblique").fillColor(DARK)
+//        .text(amountInWords(totalAmt), ML, y, { width: LCW });
+//     y += 16;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Notes", ML, y);
+//     y += 11;
+//     ["Thanks for your business.",
+//      "VASIFY TECHNOLOGIES PRIVATE LIMITED",
+//      "www.vasifytech.com  |  UIN : U62011MH2024PTC421417"].forEach(l => {
+//       doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+//       y += 10;
+//     });
+//     y += 14;
+
+//     // ── 8. Terms & Conditions ─────────────────────────────────────────────────
+//     doc.moveTo(ML, y).lineTo(ML + CW, y).stroke(BORD);
+//     y += 7;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Terms & Conditions", ML, y);
+//     y += 12;
+//     ["1. Payment due within 5 days of the invoice date.",
+//      "2. Invoice disputes must be communicated within 15 days of the invoice date.",
+//      "3. Contact us at sales@vasifytech.com for any payment-related inquiries."].forEach(t => {
+//       doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(t, ML, y, { width: LCW });
+//       y += 10;
+//     });
+//     y += 8;
+
+//     // ── 9. Payment details ────────────────────────────────────────────────────
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Payment details :", ML, y);
+//     y += 12;
+//     ["Vasify Technologies Pvt. Ltd.",
+//      "UPI ID : vasifytechnologiesprivateli2529@aubank",
+//      "Ac number 2502267573096282",
+//      "Customer ID 39818327",
+//      "IFSC code AUBL0002675",
+//      "Au bank swift code :-AUBLINBBXXX",
+//      "BRANCH NAME KANDIVALI MAHAVIR NAGAR"].forEach(l => {
+//       doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+//       y += 10;
+//     });
+
+//     // ── 10. Footer ────────────────────────────────────────────────────────────
+//     const FY = PH - 36;
+//     doc.moveTo(ML, FY - 4).lineTo(ML + CW, FY - 4).stroke(BORD);
+//     doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+//        .text("This electronically generated invoice does not necessitate a signature.",
+//          ML + CW * 0.5, FY, { width: CW * 0.5, align: "right" });
+//     doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+//        .text(`Generated on ${new Date().toLocaleDateString("en-IN")} | Vasify Technologies Pvt. Ltd.`,
+//          ML, FY + 12, { align: "center", width: CW });
+
+//     doc.end();
+//   } catch (err) {
+//     console.error("PDF error:", err);
+//     if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF" });
+//   }
+// });
+
+// // ─── GET ALL ──────────────────────────────────────────────────────────────────
 
 // router.get("/", authenticateToken, async (req, res) => {
 //   try {
 //     const page   = Math.max(1, parseInt(req.query.page,  10) || 1);
 //     const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
 //     const offset = (page - 1) * limit;
-
 //     const { search, status, customerId, isRecurring, dueDateFrom, dueDateTo } = req.query;
 
-//     let where  = "WHERE 1=1";
-//     const params = [];
+//     let where = "WHERE 1=1";
+//     const p   = [];
 
-//     if (req.user.role !== "admin") {
-//       where += " AND c.assigned_to = ?";
-//       params.push(req.user.userId);
-//     }
-
+//     if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
 //     if (search) {
-//       where += " AND (i.invoice_number LIKE ? OR c.name LIKE ? OR c.company LIKE ?)";
-//       const s = `%${search}%`;
-//       params.push(s, s, s);
+//       where += " AND (i.invoice_number LIKE ? OR COALESCE(i.customer_name_override,c.name) LIKE ?)";
+//       p.push(`%${search}%`, `%${search}%`);
 //     }
-
-//     if (status)     { where += " AND i.status = ?";      params.push(status); }
-//     if (customerId) { where += " AND i.customer_id = ?"; params.push(customerId); }
+//     if (status)       { where += " AND i.status = ?";       p.push(status); }
+//     if (customerId)   { where += " AND i.customer_id = ?";  p.push(customerId); }
 //     if (isRecurring !== undefined) {
 //       where += " AND i.is_recurring = ?";
-//       params.push(isRecurring === "true" ? 1 : 0);
+//       p.push(isRecurring === "true" ? 1 : 0);
 //     }
-//     if (dueDateFrom) { where += " AND i.due_date >= ?"; params.push(dueDateFrom); }
-//     if (dueDateTo)   { where += " AND i.due_date <= ?"; params.push(dueDateTo); }
+//     if (dueDateFrom) { where += " AND i.due_date >= ?"; p.push(dueDateFrom); }
+//     if (dueDateTo)   { where += " AND i.due_date <= ?"; p.push(dueDateTo); }
 
 //     const [invoices] = await pool.execute(
-//       `SELECT i.*,
-//               c.name    AS customer_name,
-//               c.company AS customer_company,
-//               c.email   AS customer_email,
-//               c.phone   AS customer_phone
-//        FROM invoices i
-//        LEFT JOIN customers c ON i.customer_id = c.id
-//        ${where}
-//        ORDER BY i.created_at DESC
-//        LIMIT ${limit} OFFSET ${offset}`,
-//       sanitize(...params)
+//       `${INV_SELECT} ${where} ORDER BY i.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+//       sanitize(...p)
 //     );
 
-//     // Attach items to each invoice
-//     if (invoices.length > 0) {
-//       const ids = invoices.map((i) => i.id);
-//       const placeholders = ids.map(() => "?").join(",");
-//       const [allItems] = await pool.execute(
-//         `SELECT * FROM invoice_items WHERE invoice_id IN (${placeholders}) ORDER BY created_at`,
+//     if (invoices.length) {
+//       const ids  = invoices.map(i => i.id);
+//       const ph   = ids.map(() => "?").join(",");
+//       const [all] = await pool.execute(
+//         `SELECT * FROM invoice_items WHERE invoice_id IN (${ph}) ORDER BY created_at`,
 //         sanitize(...ids)
 //       );
-//       invoices.forEach((inv) => {
-//         inv.items = allItems.filter((it) => it.invoice_id === inv.id);
-//       });
+//       invoices.forEach(inv => { inv.items = all.filter(it => it.invoice_id === inv.id); });
 //     }
 
 //     const [[{ total }]] = await pool.execute(
 //       `SELECT COUNT(*) AS total FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where}`,
-//       sanitize(...params)
+//       sanitize(...p)
 //     );
-
-//     const totalPages = total > 0 ? Math.ceil(total / limit) : 1;
 
 //     res.json({
 //       invoices,
-//       pagination: { page, limit, total, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+//       pagination: {
+//         page, limit, total,
+//         totalPages: Math.max(1, Math.ceil(total / limit)),
+//         hasNext: page < Math.ceil(total / limit),
+//         hasPrev: page > 1,
+//       },
 //     });
 //   } catch (err) {
-//     console.error("Invoices fetch error:", err);
+//     console.error("Invoices fetch:", err);
 //     res.status(500).json({ error: "Failed to fetch invoices" });
 //   }
 // });
@@ -169,606 +509,1130 @@
 
 // router.get("/stats/overview", authenticateToken, async (req, res) => {
 //   try {
-//     let where  = "WHERE 1=1";
-//     const params = [];
-//     if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; params.push(req.user.userId); }
+//     let where = "WHERE 1=1";
+//     const p   = [];
+//     if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
 
 //     const [statusStats] = await pool.execute(
-//       `SELECT i.status, COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
-//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
-//        ${where} GROUP BY i.status`,
-//       sanitize(...params)
+//       `SELECT i.status, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where} GROUP BY i.status`,
+//       sanitize(...p)
 //     );
-
 //     const [monthly] = await pool.execute(
-//       `SELECT DATE_FORMAT(i.created_at, '%Y-%m') AS month,
-//               COUNT(*) AS count,
-//               COALESCE(SUM(i.total), 0) AS total_amount
+//       `SELECT DATE_FORMAT(i.created_at,'%Y-%m') AS month, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
 //        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
 //        ${where} AND i.created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
 //        GROUP BY month ORDER BY month`,
-//       sanitize(...params)
+//       sanitize(...p)
 //     );
-
 //     const [[overdue]] = await pool.execute(
-//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
+//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
 //        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
-//        ${where} AND i.status IN ('sent','overdue') AND i.due_date < CURDATE()`,
-//       sanitize(...params)
+//        ${where} AND i.status IN ('sent','overdue','pending') AND i.due_date < CURDATE()`,
+//       sanitize(...p)
 //     );
-
 //     const [[recurring]] = await pool.execute(
-//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
+//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
 //        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
 //        ${where} AND i.is_recurring = 1`,
-//       sanitize(...params)
+//       sanitize(...p)
 //     );
 
 //     res.json({ statusBreakdown: statusStats, monthlyTrend: monthly, overdue, recurring });
 //   } catch (err) {
-//     console.error("Invoice stats error:", err);
+//     console.error("Stats:", err);
 //     res.status(500).json({ error: "Failed to fetch invoice statistics" });
 //   }
 // });
 
-// // ─── DOWNLOAD PDF ─────────────────────────────────────────────────────────────
+// // ─── GET SINGLE ───────────────────────────────────────────────────────────────
 
-// router.post("/:id/download", async (req, res) => {
+// router.get("/:id", authenticateToken, async (req, res) => {
 //   try {
 //     const { id } = req.params;
-//     const logoBase64 = req.body?.logoBase64 ?? null;
+//     const access = await canAccessInvoice(req, res, id);
+//     if (!access.ok) return;
 
-//     const [invRows] = await pool.execute(
-//       `SELECT i.*,
-//               c.name    AS customername,
-//               c.email   AS customeremail,
-//               c.phone   AS customerphone,
-//               c.company AS customercompany,
-//               c.address AS customeraddress,
-//               c.city    AS customercity,
-//               c.state   AS customerstate,
-//               c.country AS customercountry
-//        FROM invoices i
-//        LEFT JOIN customers c ON i.customer_id = c.id
-//        WHERE i.id = ?`,
-//       sanitize(id)
-//     );
-
-//     if (!invRows || invRows.length === 0) return res.status(404).json({ error: "Invoice not found" });
+//     const [[inv]] = await pool.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+//     if (!inv) return res.status(404).json({ error: "Invoice not found" });
 
 //     const [items] = await pool.execute(
-//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-//       sanitize(id)
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
 //     );
-
-//     const inv       = invRows[0];
-//     const subtotal  = Number(inv.amount || 0);
-//     const gstRate   = Number(inv.tax    || 18);
-//     const gstAmount = (subtotal * gstRate) / 100;
-//     const totalAmt  = Number(inv.total  || subtotal + gstAmount);
-
-//     // ── Format helpers ──────────────────────────────────────────────────────
-//     const fmtDate = (value) => {
-//       if (!value) return new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
-//       const d = new Date(value);
-//       if (Number.isNaN(d.getTime())) return fmtDate(null);
-//       return d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
-//     };
-
-//     const fmtCurrency = (n) => `Rs. ${Number(n).toFixed(2)}`;
-
-//     // ── PDF setup ───────────────────────────────────────────────────────────
-//     const doc = new PDFDocument({ size: "A4", margin: 40 });
-//     res.setHeader("Content-Type", "application/pdf");
-//     res.setHeader("Content-Disposition", `attachment; filename=invoice-${inv.invoice_number || "NA"}.pdf`);
-//     doc.pipe(res);
-
-//     // ── Colors ──────────────────────────────────────────────────────────────
-//     const brandPrimary   = "#0F4C81";   // deep Renalease blue
-//     const brandSecondary = "#1E88E5";
-//     const accentTeal     = "#00897B";   // medical teal
-//     const accentGold     = "#F9A825";
-//     const textDark       = "#1A2332";
-//     const textGray       = "#64748B";
-//     const bgLight        = "#F8FAFC";
-//     const borderGray     = "#E2E8F0";
-
-//     const PAGE_W = 595.28;
-//     const ML     = 40;
-//     const MR     = 40;
-//     const CW     = PAGE_W - ML - MR;
-
-//     let y = 40;
-
-//     // ── LOGO ────────────────────────────────────────────────────────────────
-//     if (logoBase64) {
-//       try {
-//         const imgData = logoBase64.includes(",") ? logoBase64.split(",")[1] : logoBase64;
-//         doc.image(Buffer.from(imgData, "base64"), ML, y, { width: 140, fit: [140, 55] });
-//       } catch (e) { console.error("Logo error:", e); }
-//     }
-
-//     // ── CLINIC BRANDING (right of logo) ──────────────────────────────────────
-//     doc
-//       .fontSize(18)
-//       .font("Helvetica-Bold")
-//       .fillColor(brandPrimary)
-//       .text("Renalease", PAGE_W - MR - 160, y + 4, { align: "right", width: 160 });
-
-//     doc
-//       .fontSize(8.5)
-//       .font("Helvetica")
-//       .fillColor(textGray)
-//       .text("Kidney Care & Nephrology Services", PAGE_W - MR - 160, y + 26, { align: "right", width: 160 });
-
-//     // ── INVOICE BADGE ────────────────────────────────────────────────────────
-//     y += 65;
-//     doc
-//       .rect(ML, y, CW, 34)
-//       .fillAndStroke(brandPrimary, brandPrimary);
-
-//     doc
-//       .fontSize(20)
-//       .font("Helvetica-Bold")
-//       .fillColor("#FFFFFF")
-//       .text("TAX INVOICE", ML, y + 8, { align: "center", width: CW });
-
-//     y += 44;
-
-//     // ── INVOICE META ROW ─────────────────────────────────────────────────────
-//     doc
-//       .rect(ML, y, CW, 26)
-//       .fillAndStroke(bgLight, borderGray);
-
-//     const metaItems = [
-//       { label: "Invoice No", value: inv.invoice_number || "—" },
-//       { label: "Issue Date",  value: fmtDate(inv.issue_date || inv.created_at) },
-//       { label: "Due Date",    value: fmtDate(inv.due_date) },
-//       { label: "Status",      value: (inv.status || "draft").toUpperCase() },
-//     ];
-
-//     const metaColW = CW / metaItems.length;
-//     metaItems.forEach((m, i) => {
-//       const mx = ML + i * metaColW;
-//       doc.fontSize(7).font("Helvetica-Bold").fillColor(textGray)
-//          .text(m.label, mx + 6, y + 5, { width: metaColW - 8 });
-//       doc.fontSize(8).font("Helvetica-Bold")
-//          .fillColor(m.label === "Status" ? accentTeal : textDark)
-//          .text(m.value, mx + 6, y + 14, { width: metaColW - 8 });
-//     });
-
-//     y += 36;
-
-//     // ── BILL TO / FROM ────────────────────────────────────────────────────────
-//     const halfW   = (CW - 12) / 2;
-//     const fromX   = ML;
-//     const toX     = ML + halfW + 12;
-//     const blockY  = y;
-
-//     // "Billed From" box
-//     doc.rect(fromX, blockY, halfW, 90).fillAndStroke(bgLight, borderGray);
-//     doc.fontSize(8).font("Helvetica-Bold").fillColor(brandPrimary)
-//        .text("FROM", fromX + 8, blockY + 8);
-//     doc.fontSize(9).font("Helvetica-Bold").fillColor(textDark)
-//        .text("Vasify Technologies Pvt. Ltd.", fromX + 8, blockY + 20);
-//     doc.fontSize(7.5).font("Helvetica").fillColor(textGray)
-//        .text(
-//          "102, Dani Sanjay Apartment, Datta Mandir Road,\nDahanukar Wadi, Kandivali West,\nMumbai, Maharashtra – 400067\nPhone: +91-9769754446",
-//          fromX + 8,
-//          blockY + 34,
-//          { width: halfW - 16, lineGap: 2 }
-//        );
-
-//     // "Bill To" box
-//     doc.rect(toX, blockY, halfW, 90).fillAndStroke("#EEF7FF", brandSecondary);
-//     doc.fontSize(8).font("Helvetica-Bold").fillColor(brandSecondary)
-//        .text("BILL TO", toX + 8, blockY + 8);
-//     doc.fontSize(9.5).font("Helvetica-Bold").fillColor(textDark)
-//        .text(inv.customername || "Patient Name", toX + 8, blockY + 20);
-
-//     let toY = blockY + 35;
-//     const toDetails = [
-//       inv.customercompany,
-//       inv.customeremail   ? `Email: ${inv.customeremail}`   : null,
-//       inv.customerphone   ? `Phone: ${inv.customerphone}`   : null,
-//       [inv.customeraddress, inv.customercity, inv.customerstate, inv.customercountry].filter(Boolean).join(", ") || null,
-//     ].filter(Boolean);
-
-//     toDetails.forEach((line) => {
-//       doc.fontSize(7.5).font("Helvetica").fillColor(textGray)
-//          .text(line, toX + 8, toY, { width: halfW - 16 });
-//       toY += 12;
-//     });
-
-//     y = blockY + 100;
-
-//     // ── ITEMS TABLE ───────────────────────────────────────────────────────────
-//     const colSr   = { x: ML,           w: 35 };
-//     const colDesc = { x: ML + 35,      w: CW - 35 - 100 };
-//     const colAmt  = { x: ML + CW - 100, w: 100 };
-
-//     // Table header
-//     doc.rect(ML, y, CW, 24).fillAndStroke(brandPrimary, brandPrimary);
-//     const thCols = [
-//       { label: "Sr.",         x: colSr.x,   w: colSr.w,   align: "center" },
-//       { label: "Service / Description", x: colDesc.x + 6, w: colDesc.w - 12, align: "left" },
-//       { label: "Amount (Rs.)", x: colAmt.x,  w: colAmt.w,  align: "right" },
-//     ];
-//     thCols.forEach(({ label, x, w, align }) => {
-//       doc.fontSize(8.5).font("Helvetica-Bold").fillColor("#FFFFFF")
-//          .text(label, x, y + 8, { width: w, align });
-//     });
-//     y += 24;
-
-//     const tableRows = items.length > 0 ? items : [{ description: "Medical Service Charges", amount: subtotal }];
-
-//     tableRows.forEach((item, idx) => {
-//       const rowH = 24;
-//       if (idx % 2 === 1) doc.rect(ML, y, CW, rowH).fill("#F8FBFF");
-
-//       doc.fontSize(8).font("Helvetica").fillColor(textDark)
-//          .text(String(idx + 1), colSr.x, y + 8, { width: colSr.w, align: "center" });
-
-//       doc.fontSize(8).font("Helvetica").fillColor(textDark)
-//          .text(item.description || "Medical Service", colDesc.x + 6, y + 8, { width: colDesc.w - 12 });
-
-//       doc.fontSize(8).font("Helvetica-Bold").fillColor(textDark)
-//          .text(Number(item.amount || 0).toFixed(2), colAmt.x, y + 8, { width: colAmt.w, align: "right" });
-
-//       y += rowH;
-
-//       // Breakdown rows
-//       let breakdown = null;
-//       try {
-//         breakdown = typeof item.breakdown === "string" ? JSON.parse(item.breakdown) : item.breakdown;
-//       } catch { breakdown = null; }
-
-//       if (Array.isArray(breakdown) && breakdown.length > 0) {
-//         breakdown.forEach((b) => {
-//           doc.fontSize(7).font("Helvetica").fillColor(textGray)
-//              .text(`  • ${b.label || ""}`, colDesc.x + 12, y + 4, { width: colDesc.w - 18 });
-//           doc.fontSize(7).font("Helvetica").fillColor(textGray)
-//              .text(Number(b.amount || 0).toFixed(2), colAmt.x, y + 4, { width: colAmt.w, align: "right" });
-//           y += 13;
-//         });
-//       }
-
-//       // Divider
-//       doc.moveTo(ML, y).lineTo(ML + CW, y).strokeColor(borderGray).lineWidth(0.5).stroke();
-//       y += 8;
-//     });
-
-//     y += 6;
-
-//     // ── TOTALS ────────────────────────────────────────────────────────────────
-//     const totX  = ML + CW - 220;
-//     const valX  = ML + CW - 90;
-//     const totW  = 220;
-//     const valW  = 90;
-
-//     const drawTotalRow = (label, value, bold = false, bg = null, textCol = textDark) => {
-//       if (bg) { doc.rect(totX - 6, y - 2, totW + valW + 6, 22).fill(bg); }
-//       doc.fontSize(bold ? 10 : 9)
-//          .font(bold ? "Helvetica-Bold" : "Helvetica")
-//          .fillColor(textCol)
-//          .text(label, totX, y + (bold ? 4 : 5), { width: totW });
-//       doc.fontSize(bold ? 10 : 9)
-//          .font(bold ? "Helvetica-Bold" : "Helvetica")
-//          .fillColor(textCol)
-//          .text(value, valX, y + (bold ? 4 : 5), { width: valW, align: "right" });
-//       y += bold ? 26 : 18;
-//     };
-
-//     drawTotalRow("Subtotal (before GST)",               fmtCurrency(subtotal));
-//     drawTotalRow(`GST @ ${gstRate}% (on total amount)`, fmtCurrency(gstAmount), false, null, accentGold);
-//     doc.moveTo(totX - 6, y - 2).lineTo(ML + CW, y - 2).strokeColor(borderGray).lineWidth(1).stroke();
-//     drawTotalRow("TOTAL PAYABLE (incl. GST)", fmtCurrency(totalAmt), true, "#EEF2FF", brandPrimary);
-
-//     y += 8;
-
-//     // ── RECURRING NOTE ────────────────────────────────────────────────────────
-//     if (inv.is_recurring) {
-//       const freq   = inv.recurring_frequency || "monthly";
-//       const cycles = inv.recurring_cycles    || "—";
-//       const start  = inv.recurring_start_date ? fmtDate(inv.recurring_start_date) : "—";
-
-//       doc.rect(ML, y, CW, 28).fillAndStroke("#EDF7F6", accentTeal);
-//       doc.fontSize(8).font("Helvetica-Bold").fillColor(accentTeal)
-//          .text("♻  RECURRING BILLING", ML + 8, y + 6);
-//       doc.fontSize(7.5).font("Helvetica").fillColor(textGray)
-//          .text(
-//            `This is a recurring invoice (${freq.charAt(0).toUpperCase() + freq.slice(1)}). Cycle ${cycles} starting ${start}.`,
-//            ML + 8,
-//            y + 16,
-//            { width: CW - 16 }
-//          );
-//       y += 36;
-//     }
-
-//     // ── BANK DETAILS ──────────────────────────────────────────────────────────
-//     y += 4;
-//     doc.fontSize(8.5).font("Helvetica-Bold").fillColor(textDark).text("Bank Details", ML, y);
-//     y += 13;
-
-//     const bankLines = [
-//       "Account Name : Vasify Technologies Pvt. Ltd.",
-//       "Bank         : Axis Bank, M.G. Road, Kandivali West Branch",
-//       "Account No   : 924020018276663",
-//       "IFSC         : UTIB0001578",
-//     ];
-//     bankLines.forEach((line) => {
-//       doc.fontSize(8).font("Helvetica").fillColor(textGray).text(line, ML, y);
-//       y += 12;
-//     });
-
-//     // ── NOTES ────────────────────────────────────────────────────────────────
-//     if (inv.notes && String(inv.notes).trim()) {
-//       y += 6;
-//       doc.fontSize(8.5).font("Helvetica-Bold").fillColor(textDark).text("Notes", ML, y);
-//       y += 13;
-//       doc.fontSize(8).font("Helvetica").fillColor(textGray)
-//          .text(String(inv.notes).trim(), ML, y, { width: CW, lineGap: 2 });
-//     }
-
-//     // ── FOOTER ────────────────────────────────────────────────────────────────
-//     const footerY = 775;
-//     doc.rect(ML, footerY - 8, CW, 1).fill(borderGray);
-//     doc.fontSize(8).font("Helvetica").fillColor(textGray)
-//        .text(
-//          "Thank you for trusting Renalease with your care. For queries, contact: +91-9769754446 | www.renalease.com",
-//          ML,
-//          footerY,
-//          { align: "center", width: CW }
-//        );
-//     doc.fontSize(7).fillColor("#9CA3AF")
-//        .text(
-//          `Generated on ${new Date().toLocaleDateString("en-IN")} | This is a computer-generated invoice.`,
-//          ML,
-//          footerY + 12,
-//          { align: "center", width: CW }
-//        );
-
-//     doc.end();
+//     inv.items = items;
+//     res.json({ invoice: inv });
 //   } catch (err) {
-//     console.error("PDF generation error:", err);
-//     if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF" });
+//     console.error("Get invoice:", err);
+//     res.status(500).json({ error: "Failed to fetch invoice" });
 //   }
 // });
 
-// // ─── CREATE INVOICE ───────────────────────────────────────────────────────────
+// // ─── CREATE ───────────────────────────────────────────────────────────────────
 
 // router.post(
 //   "/",
 //   authenticateToken,
 //   [
 //     body("customerId").notEmpty().withMessage("Customer ID is required"),
-//     body("items").isArray({ min: 1 }).withMessage("Items array is required"),
+//     body("items").isArray({ min: 1 }).withMessage("At least one item is required"),
 //   ],
 //   async (req, res) => {
 //     if (handleValidation(req, res)) return;
 
-//     const connection = await pool.getConnection();
-//     await connection.beginTransaction();
+//     const conn = await pool.getConnection();
+//     await conn.beginTransaction();
 
 //     try {
-//       const { customerId, items, isRecurring, recurringFrequency, recurringCycles, recurringStartDate, recurringEndDate } = req.body;
+//       const {
+//         customerId, items,
+//         isRecurring, recurringFrequency, recurringCycles,
+//         recurringStartDate, recurringEndDate,
+//         customerName, customerEmail, customerPhone, customerCompany, customerAddress,
+//         poNumber, terms, placeOfSupply,
+//       } = req.body;
 
-//       // Check customer
-//       const [customers] = await connection.execute(
-//         "SELECT id, assigned_to, default_tax_rate, default_due_days, default_invoice_notes FROM customers WHERE id = ?",
+//       // Validate customer
+//       const [custs] = await conn.execute(
+//         `SELECT id, assigned_to, default_tax_rate, default_due_days, default_invoice_notes
+//          FROM customers WHERE id = ?`,
 //         sanitize(customerId)
 //       );
-//       if (!customers.length) { await connection.rollback(); connection.release(); return res.status(400).json({ error: "Customer not found" }); }
-
-//       const customer = customers[0];
-//       if (req.user.role !== "admin" && customer.assigned_to !== req.user.userId) {
-//         await connection.rollback(); connection.release();
+//       if (!custs.length) {
+//         await conn.rollback(); conn.release();
+//         return res.status(400).json({ error: "Customer not found" });
+//       }
+//       const cust = custs[0];
+//       if (req.user.role !== "admin" && cust.assigned_to !== req.user.id) {
+//         await conn.rollback(); conn.release();
 //         return res.status(403).json({ error: "No permission to invoice this customer" });
 //       }
 
-//       // Financial values
-//       const subtotal  = req.body.amount !== undefined ? Number(req.body.amount) : items.reduce((s, i) => s + Number(i.amount || 0), 0);
-//       const taxRate   = req.body.tax !== undefined ? Number(req.body.tax) : Number(customer.default_tax_rate || 0);
+//       // Financials
+//       const subtotal  = req.body.amount !== undefined
+//         ? Number(req.body.amount)
+//         : items.reduce((s, i) => s + Number(i.amount || 0), 0);
+//       const taxRate   = req.body.tax !== undefined ? Number(req.body.tax) : Number(cust.default_tax_rate || 18);
 //       const gstAmt    = (subtotal * taxRate) / 100;
 //       const total     = req.body.total !== undefined ? Number(req.body.total) : subtotal + gstAmt;
 //       const status    = req.body.status || "draft";
-//       const issueDate = req.body.issueDate ? toSqlDate(req.body.issueDate) : toSqlDate(new Date());
-//       const dueDate   = req.body.dueDate  ? toSqlDate(req.body.dueDate)
-//         : (() => { const d = new Date(); d.setDate(d.getDate() + Number(customer.default_due_days || 30)); return toSqlDate(d); })();
-//       const notes     = req.body.notes ?? customer.default_invoice_notes ?? null;
+//       const issueDate = toSqlDate(req.body.issueDate || new Date());
+//       const dueDate   = toSqlDate(req.body.dueDate   || (() => {
+//         const d = new Date(); d.setDate(d.getDate() + Number(cust.default_due_days || 5)); return d;
+//       })());
+//       const notes = req.body.notes ?? cust.default_invoice_notes ?? null;
 
-//       const invoiceNumber = await generateRNLNumber(connection);
-//       const invoiceId     = uuidv4();
+//       // Invoice number: use supplied if valid & unique, else auto-generate
+//       let invNum = String(req.body.invoiceNumber || "").trim();
+//       if (invNum) {
+//         const [dup] = await conn.execute(
+//           "SELECT id FROM invoices WHERE invoice_number = ?", sanitize(invNum)
+//         );
+//         if (dup.length) invNum = await generateInvNumber(conn);
+//       } else {
+//         invNum = await generateInvNumber(conn);
+//       }
 
-//       await connection.execute(
+//       const invoiceId = uuidv4();
+
+//       await conn.execute(
 //         `INSERT INTO invoices
-//            (id, customer_id, invoice_number, amount, tax, total, status,
+//            (id, customer_id, invoice_number, amount, tax, gst_amount, total, status,
 //             issue_date, due_date, notes,
+//             po_number, terms, place_of_supply,
+//             customer_name_override, customer_email_override,
+//             customer_phone_override, customer_company_override, customer_address_override,
 //             is_recurring, recurring_frequency, recurring_cycles,
 //             recurring_start_date, recurring_end_date)
-//          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+//          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 //         sanitize(
-//           invoiceId, customerId, invoiceNumber, subtotal, taxRate, total, status,
+//           invoiceId, customerId, invNum, subtotal, taxRate, gstAmt, total, status,
 //           issueDate, dueDate, notes,
+//           poNumber        || null,
+//           terms           || "due_on_receipt",
+//           placeOfSupply   || "Maharashtra (27)",
+//           customerName    || null,
+//           customerEmail   || null,
+//           customerPhone   || null,
+//           customerCompany || null,
+//           customerAddress || null,
 //           isRecurring ? 1 : 0,
-//           recurringFrequency || null,
-//           recurringCycles    ? Number(recurringCycles) : null,
-//           recurringStartDate ? toSqlDate(recurringStartDate) : null,
-//           recurringEndDate   ? toSqlDate(recurringEndDate)   : null
+//           recurringFrequency  || null,
+//           recurringCycles     ? Number(recurringCycles) : null,
+//           recurringStartDate  ? toSqlDate(recurringStartDate) : null,
+//           recurringEndDate    ? toSqlDate(recurringEndDate)   : null
 //         )
 //       );
 
 //       for (const item of items) {
-//         await connection.execute(
-//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, breakdown)
-//            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+//         await conn.execute(
+//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+//            VALUES (?,?,?,?,?,?,?,?)`,
 //           sanitize(
 //             uuidv4(), invoiceId,
 //             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+//             item.hsn || "998313",
 //             item.breakdown ? JSON.stringify(item.breakdown) : null
 //           )
 //         );
 //       }
 
-//       await connection.commit();
+//       await conn.commit();
 
-//       const [[created]] = await connection.execute(
-//         `SELECT i.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone
-//          FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ?`,
-//         sanitize(invoiceId)
-//       );
-//       const [createdItems] = await connection.execute(
-//         "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-//         sanitize(invoiceId)
+//       const [[created]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(invoiceId));
+//       const [createdItems] = await conn.execute(
+//         "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(invoiceId)
 //       );
 //       created.items = createdItems;
 
 //       res.status(201).json({ message: "Invoice created successfully", invoice: created });
 //     } catch (err) {
-//       await connection.rollback();
-//       console.error("Invoice creation error:", err);
+//       await conn.rollback();
+//       console.error("Create invoice:", err);
 //       res.status(500).json({ error: "Failed to create invoice", details: err.message });
 //     } finally {
-//       connection.release();
+//       conn.release();
 //     }
 //   }
 // );
 
-// // ─── UPDATE INVOICE ───────────────────────────────────────────────────────────
+// // ─── UPDATE ───────────────────────────────────────────────────────────────────
 
 // router.put("/:id", authenticateToken, async (req, res) => {
 //   const { id } = req.params;
 
+//   // Existence check first (gives 404 not 403 for missing rows)
+//   const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+//   if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
 //   const access = await canAccessInvoice(req, res, id);
 //   if (!access.ok) return;
 
-//   const connection = await pool.getConnection();
-//   await connection.beginTransaction();
+//   const conn = await pool.getConnection();
+//   await conn.beginTransaction();
 
 //   try {
-//     const [existing] = await connection.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
-//     if (!existing.length) { await connection.rollback(); connection.release(); return res.status(404).json({ error: "Invoice not found" }); }
+//     const data = { ...req.body };
 
-//     const updateData = { ...req.body };
+//     // Auto-set paidDate when marking paid
+//     if (data.status === "paid" && !data.paidDate) data.paidDate = toSqlDate(new Date());
 
-//     // When marking as paid, auto-set paidDate
-//     if (updateData.status === "paid" && !updateData.paidDate) {
-//       updateData.paidDate = toSqlDate(new Date());
-//     }
-//     if (updateData.dueDate)  updateData.dueDate  = toSqlDate(updateData.dueDate);
-//     if (updateData.issueDate) updateData.issueDate = toSqlDate(updateData.issueDate);
-//     if (updateData.paidDate)  updateData.paidDate  = toSqlDate(updateData.paidDate);
-//     if (updateData.recurringStartDate) updateData.recurringStartDate = toSqlDate(updateData.recurringStartDate);
-//     if (updateData.recurringEndDate)   updateData.recurringEndDate   = toSqlDate(updateData.recurringEndDate);
+//     // Normalise dates
+//     ["issueDate","dueDate","paidDate","recurringStartDate","recurringEndDate"].forEach(k => {
+//       if (data[k]) data[k] = toSqlDate(data[k]);
+//     });
 
-//     const fields = [];
-//     const values = [];
-
-//     for (const [key, value] of Object.entries(updateData)) {
+//     const fields = [], values = [];
+//     for (const [key, value] of Object.entries(data)) {
 //       if (key === "items" || value === undefined) continue;
-//       const dbField = invoiceFieldMap[key];
-//       if (!dbField) continue;
-//       const dbVal = key === "isRecurring" ? (value ? 1 : 0) : value;
-//       fields.push(`${dbField} = ?`);
-//       values.push(dbVal);
+//       const col = FIELD_MAP[key];
+//       if (!col) continue;
+//       fields.push(`${col} = ?`);
+//       values.push(key === "isRecurring" ? (value ? 1 : 0) : (value === "" ? null : value));
 //     }
 
-//     if (fields.length > 0) {
-//       values.push(id);
-//       await connection.execute(
+//     if (fields.length) {
+//       await conn.execute(
 //         `UPDATE invoices SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-//         sanitize(...values)
+//         sanitize(...values, id)
 //       );
 //     }
 
-//     if (Array.isArray(updateData.items)) {
-//       await connection.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
-//       for (const item of updateData.items) {
-//         await connection.execute(
-//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, breakdown)
-//            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+//     if (Array.isArray(data.items)) {
+//       await conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
+//       for (const item of data.items) {
+//         await conn.execute(
+//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+//            VALUES (?,?,?,?,?,?,?,?)`,
 //           sanitize(
 //             uuidv4(), id,
 //             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+//             item.hsn || "998313",
 //             item.breakdown ? JSON.stringify(item.breakdown) : null
 //           )
 //         );
 //       }
 //     }
 
-//     await connection.commit();
+//     await conn.commit();
 
-//     const [[updated]] = await connection.execute(
-//       `SELECT i.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone
-//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ?`,
-//       sanitize(id)
+//     const [[updated]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+//     const [updItems]  = await conn.execute(
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
 //     );
-//     const [updatedItems] = await connection.execute(
-//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-//       sanitize(id)
-//     );
-//     updated.items = updatedItems;
+//     updated.items = updItems;
 
 //     res.json({ message: "Invoice updated successfully", invoice: updated });
 //   } catch (err) {
-//     await connection.rollback();
-//     console.error("Invoice update error:", err);
+//     await conn.rollback();
+//     console.error("Update invoice:", err);
 //     res.status(500).json({ error: "Failed to update invoice" });
 //   } finally {
-//     connection.release();
+//     conn.release();
 //   }
 // });
 
-// // ─── DELETE INVOICE ───────────────────────────────────────────────────────────
+// // ─── DELETE ───────────────────────────────────────────────────────────────────
 
 // router.delete("/:id", authenticateToken, async (req, res) => {
 //   const { id } = req.params;
-//   const access  = await canAccessInvoice(req, res, id);
+
+//   const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+//   if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
+//   const access = await canAccessInvoice(req, res, id);
 //   if (!access.ok) return;
 
 //   try {
-//     const [existing] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
-//     if (!existing.length) return res.status(404).json({ error: "Invoice not found" });
-
 //     await pool.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
 //     await pool.execute("DELETE FROM invoices WHERE id = ?", sanitize(id));
 //     res.json({ message: "Invoice deleted successfully" });
 //   } catch (err) {
-//     console.error("Invoice delete error:", err);
+//     console.error("Delete invoice:", err);
 //     res.status(500).json({ error: "Failed to delete invoice" });
 //   }
 // });
 
-// // ─── MIGRATION SQL (add missing columns) ─────────────────────────────────────
-// // Run this once against your DB if upgrading from the old schema:
-// //
-// //   ALTER TABLE invoices
-// //     ADD COLUMN IF NOT EXISTS issue_date        DATE         NULL,
-// //     ADD COLUMN IF NOT EXISTS paid_date         DATE         NULL,
-// //     ADD COLUMN IF NOT EXISTS is_recurring      TINYINT(1)   NOT NULL DEFAULT 0,
-// //     ADD COLUMN IF NOT EXISTS recurring_frequency  VARCHAR(20)  NULL,
-// //     ADD COLUMN IF NOT EXISTS recurring_cycles  INT          NULL,
-// //     ADD COLUMN IF NOT EXISTS recurring_start_date  DATE     NULL,
-// //     ADD COLUMN IF NOT EXISTS recurring_end_date    DATE     NULL;
-// //
-// //   ALTER TABLE invoice_items
-// //     ADD COLUMN IF NOT EXISTS breakdown TEXT NULL;
+// module.exports = router;
+
+
+
+//testing2
+
+// const { v4: uuidv4 }             = require("uuid");
+// const PDFDocument                = require("pdfkit");
+// const express                    = require("express");
+// const { body, validationResult } = require("express-validator");
+// const { pool }                   = require("../config/database");
+// const { authenticateToken }      = require("../middleware/auth");
+
+// const router = express.Router();
+
+// // ─── UTILS ────────────────────────────────────────────────────────────────────
+
+// const sanitize = (...params) => params.map((p) => (p === undefined ? null : p));
+
+// const toSqlDate = (value) => {
+//   if (!value) return null;
+//   const d = value instanceof Date ? value : new Date(value);
+//   if (Number.isNaN(d.getTime())) return null;
+//   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+// };
+
+// const handleValidation = (req, res) => {
+//   const errors = validationResult(req);
+//   if (!errors.isEmpty()) {
+//     res.status(400).json({ error: "Validation failed", details: errors.array() });
+//     return true;
+//   }
+//   return false;
+// };
+
+// // ─── INVOICE NUMBER: INV-YYYYMM-XXXX (original format) ───────────────────────
+// const generateInvNumber = async (conn) => {
+//   const now    = new Date();
+//   const ym     = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
+//   const prefix = `INV-${ym}-`;
+//   const [rows] = await conn.execute(
+//     `SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1`,
+//     [`${prefix}%`]
+//   );
+//   const seq = rows.length
+//     ? (parseInt(rows[0].invoice_number.split("-").pop(), 10) || 0) + 1
+//     : 1;
+//   return `${prefix}${String(seq).padStart(4, "0")}`;
+// };
+
+// const FIELD_MAP = {
+//   customerId:              "customer_id",
+//   amount:                  "amount",
+//   tax:                     "tax",
+//   gstAmount:               "gst_amount",
+//   total:                   "total",
+//   status:                  "status",
+//   issueDate:               "issue_date",
+//   dueDate:                 "due_date",
+//   paidDate:                "paid_date",
+//   notes:                   "notes",
+//   poNumber:                "po_number",
+//   terms:                   "terms",
+//   placeOfSupply:           "place_of_supply",
+//   customerName:            "customer_name_override",
+//   customerEmail:           "customer_email_override",
+//   customerPhone:           "customer_phone_override",
+//   customerCompany:         "customer_company_override",
+//   customerAddress:         "customer_address_override",
+//   isRecurring:             "is_recurring",
+//   recurringFrequency:      "recurring_frequency",
+//   recurringCycles:         "recurring_cycles",
+//   recurringStartDate:      "recurring_start_date",
+//   recurringEndDate:        "recurring_end_date",
+// };
+
+// // ─── ACCESS CONTROL ───────────────────────────────────────────────────────────
+
+// const canAccessInvoice = async (req, res, invoiceId) => {
+//   if (req.user.role === "admin") return { ok: true };
+//   const [rows] = await pool.execute(
+//     `SELECT i.id FROM invoices i
+//      INNER JOIN customers c ON i.customer_id = c.id
+//      WHERE i.id = ? AND c.assigned_to = ?`,
+//     sanitize(invoiceId, req.user.id)
+//   );
+//   if (!rows.length)
+//     return { ok: false, response: res.status(403).json({ error: "Access denied" }) };
+//   return { ok: true };
+// };
+
+// // ─── AMOUNT IN WORDS ──────────────────────────────────────────────────────────
+
+// function amountInWords(amount) {
+//   const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+//                  "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+//                  "Seventeen","Eighteen","Nineteen"];
+//   const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+//   function convert(n) {
+//     if (!n) return "";
+//     if (n < 20)       return ones[n] + " ";
+//     if (n < 100)      return tens[Math.floor(n / 10)] + " " + ones[n % 10] + " ";
+//     if (n < 1000)     return ones[Math.floor(n / 100)] + " Hundred " + convert(n % 100);
+//     if (n < 100000)   return convert(Math.floor(n / 1000))    + "Thousand " + convert(n % 1000);
+//     if (n < 10000000) return convert(Math.floor(n / 100000))  + "Lakh "     + convert(n % 100000);
+//     return               convert(Math.floor(n / 10000000)) + "Crore "    + convert(n % 10000000);
+//   }
+//   const rupees = Math.floor(amount);
+//   const paise  = Math.round((amount - rupees) * 100);
+//   let out = "Indian Rupee " + (convert(rupees).trim() || "Zero");
+//   if (paise) out += " and " + convert(paise).trim() + " Paise";
+//   return out + " Only";
+// }
+
+// // ─── SELECT HELPER ────────────────────────────────────────────────────────────
+
+// const INV_SELECT = `
+//   SELECT
+//     i.*,
+//     COALESCE(i.customer_name_override,    c.name)    AS customer_name,
+//     COALESCE(i.customer_company_override, c.company) AS customer_company,
+//     COALESCE(i.customer_email_override,   c.email)   AS customer_email,
+//     COALESCE(i.customer_phone_override,   c.phone)   AS customer_phone,
+//     COALESCE(i.customer_address_override,
+//       CONCAT_WS(', ', NULLIF(c.address,''), NULLIF(c.city,''),
+//                 NULLIF(c.state,''), NULLIF(c.zip_code,''), NULLIF(c.country,'')))
+//                                                       AS customer_address
+//   FROM invoices i
+//   LEFT JOIN customers c ON i.customer_id = c.id
+// `;
+
+// // ─── PDF GENERATION ───────────────────────────────────────────────────────────
+
+// router.post("/:id/download", authenticateToken, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+
+//     const access = await canAccessInvoice(req, res, id);
+//     if (!access.ok) return;
+
+//     const [invRows] = await pool.execute(
+//       INV_SELECT + " WHERE i.id = ?",
+//       sanitize(id)
+//     );
+//     if (!invRows.length) return res.status(404).json({ error: "Invoice not found" });
+
+//     const [items] = await pool.execute(
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
+//       sanitize(id)
+//     );
+
+//     const inv      = invRows[0];
+//     const subtotal = Number(inv.amount || 0);
+//     const gstRate  = Number(inv.tax    || 18);
+//     const halfRate = gstRate / 2;
+//     const cgstAmt  = (subtotal * halfRate) / 100;
+//     const sgstAmt  = cgstAmt;
+//     const totalAmt = Number(inv.total  || subtotal + cgstAmt + sgstAmt);
+//     const balDue   = inv.status === "paid" ? 0 : totalAmt;
+//     const logoB64  = req.body?.logoBase64 ?? null;
+
+//     const termsLabel = {
+//       net_7: "Net 7", net_15: "Net 15", net_30: "Net 30",
+//       net_45: "Net 45", net_60: "Net 60",
+//     }[inv.terms] || "Due on Receipt";
+
+//     const fmtD = (v) => {
+//       if (!v) return "-";
+//       const d = new Date(v);
+//       return isNaN(d.getTime()) ? "-"
+//         : d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+//     };
+
+//     // ── fmtAmt: formats a number as "Rs. 1,23,456.00"
+//     // Using ASCII "Rs." avoids the Helvetica glyph-missing issue with the
+//     // Unicode rupee sign (U+20B9) which renders as a blank box in standard PDF fonts.
+//     const fmtAmt = (n) => {
+//       const num = Number(n || 0);
+//       // Indian number formatting (lakhs/crores) without Intl for compatibility
+//       const fixed = num.toFixed(2);
+//       const [intPart, decPart] = fixed.split(".");
+//       // Group: last 3 then pairs
+//       const last3  = intPart.slice(-3);
+//       const rest   = intPart.slice(0, -3);
+//       const grouped = rest
+//         ? rest.replace(/\B(?=(\d{2})+(?!\d))/g, ",") + "," + last3
+//         : last3;
+//       return `Rs. ${grouped}.${decPart}`;
+//     };
+
+//     // Plain number string for non-currency columns (qty, rate)
+//     const fmtN = (n) => Number(n || 0).toFixed(2);
+
+//     // ── PDFKit ────────────────────────────────────────────────────────────────
+//     const doc = new PDFDocument({ size: "A4", margin: 0, autoFirstPage: true });
+//     res.setHeader("Content-Type", "application/pdf");
+//     res.setHeader("Content-Disposition",
+//       `attachment; filename=invoice-${inv.invoice_number || "NA"}.pdf`);
+//     doc.pipe(res);
+
+//     const DARK  = "#1A1A1A", GRAY = "#555555", LGRAY = "#888888";
+//     const BORD  = "#CCCCCC", BGH  = "#F5F5F5", BGALT = "#FAFAFA";
+//     const BGTOT = "#EEEEEE", BGBAL = "#E8F5E9";
+
+//     const PW = 595.28, PH = 841.89, ML = 30, MR = 30, CW = PW - ML - MR;
+//     let y = 30;
+
+//     // ── 1. Logo + company ─────────────────────────────────────────────────────
+//     if (logoB64) {
+//       try {
+//         const raw = logoB64.includes(",") ? logoB64.split(",")[1] : logoB64;
+//         doc.image(Buffer.from(raw, "base64"), ML, y, { fit: [120, 55] });
+//       } catch (e) { console.warn("Logo render:", e.message); }
+//     }
+
+//     const CX = ML + 130;
+//     doc.fontSize(11).font("Helvetica-Bold").fillColor(DARK)
+//        .text("Vasify Technologies Pvt. Ltd.", CX, y, { width: CW - 130 });
+//     y += 14;
+//     doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+//        .text("Axiom Milan CHS, 607, 22 Datta Mandir road\nDhanakurwadi, Kandivali West.\nMumbai Maharashtra 400067\nIndia",
+//          CX, y, { width: CW - 130, lineGap: 1 });
+//     y += 42;
+//     ["Company ID : U62011MH2024PTC421417","GSTIN: 27AAKCV0353N1ZW","PAN: AAKCV0353N",
+//      "Tax ID ::MUMV33878F","www.vasifytech.com"].forEach(l => {
+//       doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, CX, y, { width: CW - 130 });
+//       y += 10;
+//     });
+
+//     doc.fontSize(26).font("Helvetica-Bold").fillColor(DARK)
+//        .text("TAX INVOICE", PW - MR - 180, 30, { align: "right", width: 180 });
+
+//     y = Math.max(y, 122) + 4;
+
+//     // ── 2. Meta box ───────────────────────────────────────────────────────────
+//     const MBH = 68, HW = CW / 2;
+//     doc.rect(ML, y, CW, MBH).stroke(BORD);
+//     doc.moveTo(ML + HW, y).lineTo(ML + HW, y + MBH).stroke(BORD);
+//     doc.moveTo(ML, y + 14).lineTo(ML + CW, y + 14).stroke(BORD);
+
+//     const LR = [
+//       ["#",            inv.invoice_number || "-"],
+//       ["Invoice Date",  fmtD(inv.issue_date || inv.created_at)],
+//       ["Terms",         termsLabel],
+//       ["Due Date",      fmtD(inv.due_date)],
+//       ["P.O.#",         inv.po_number || "-"],
+//     ];
+//     LR.forEach(([lbl, val], i) => {
+//       const ry = y + 16 + i * 10;
+//       doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + 4, ry, { width: HW * 0.42 });
+//       doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW * 0.44, ry, { width: HW * 0.54, lineBreak: false });
+//     });
+
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY)
+//        .text("Place Of Supply", ML + HW + 4, y + 4, { width: 70 });
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text(`: ${inv.place_of_supply || "Maharashtra (27)"}`, ML + HW + 76, y + 4, { width: HW - 80 });
+
+//     [["#", inv.invoice_number || "-"],
+//      ["Invoice Date", fmtD(inv.issue_date || inv.created_at)],
+//      ["Terms", termsLabel],
+//      ["Due Date", fmtD(inv.due_date)]].forEach(([lbl, val], i) => {
+//       const ry = y + 16 + i * 11;
+//       doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + HW + 4, ry, { width: 58 });
+//       doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW + 64, ry, { width: HW - 68, lineBreak: false });
+//     });
+
+//     y += MBH + 6;
+
+//     // ── 3. Bill To / Ship To ──────────────────────────────────────────────────
+//     const AH = 86, AW = HW - 3, SX = ML + HW + 3;
+//     const addrLines = [
+//       inv.customer_company || null,
+//       inv.customer_address || null,
+//       inv.customer_email ? `Email: ${inv.customer_email}` : null,
+//       inv.customer_phone ? `Phone: ${inv.customer_phone}` : null,
+//     ].filter(Boolean);
+
+//     const drawAddrBox = (ox, title) => {
+//       doc.rect(ox, y, AW, AH).stroke(BORD);
+//       doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY).text(title, ox + 6, y + 5);
+//       doc.moveTo(ox, y + 14).lineTo(ox + AW, y + 14).stroke(BORD);
+//       let ay = y + 18;
+//       doc.fontSize(9).font("Helvetica-Bold").fillColor(DARK)
+//          .text(inv.customer_name || "-", ox + 6, ay, { width: AW - 12 });
+//       ay += 13;
+//       addrLines.forEach(l => {
+//         doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+//            .text(l, ox + 6, ay, { width: AW - 12, lineBreak: false });
+//         ay += 11;
+//       });
+//     };
+//     drawAddrBox(ML, "Bill To");
+//     drawAddrBox(SX, "Ship To");
+//     y += AH + 6;
+
+//     // ── 4. Subject line ───────────────────────────────────────────────────────
+//     const subject = inv.po_number || null;
+//     if (subject) {
+//       doc.rect(ML, y, CW, 22).stroke(BORD);
+//       doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY).text("Subject :", ML + 6, y + 7);
+//       doc.fontSize(7.5).font("Helvetica").fillColor(DARK)
+//          .text(subject, ML + 58, y + 7, { width: CW - 64, lineBreak: false });
+//       y += 28;
+//     }
+
+//     // ── 5. Items table ────────────────────────────────────────────────────────
+//     const CWS = { sr:22, desc:143, hsn:42, qty:28, rate:55, cp:25, ca:45, sp:25, sa:45, amt:0 };
+//     CWS.amt = CW - CWS.sr - CWS.desc - CWS.hsn - CWS.qty - CWS.rate - CWS.cp - CWS.ca - CWS.sp - CWS.sa;
+
+//     const CXS = {};
+//     let ax = ML;
+//     for (const [k, w] of Object.entries(CWS)) { CXS[k] = ax; ax += w; }
+
+//     const vLines = (fy, ty) =>
+//       Object.values(CXS).slice(1).forEach(x => doc.moveTo(x, fy).lineTo(x, ty).stroke(BORD));
+
+//     const HDR_H = 28;
+//     doc.rect(ML, y, CW, HDR_H).fill(BGH).stroke(BORD);
+//     vLines(y, y + HDR_H);
+
+//     const cgstSpan = CWS.cp + CWS.ca, sgstSpan = CWS.sp + CWS.sa;
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text("CGST", CXS.cp, y + 3, { width: cgstSpan, align: "center" });
+//     doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+//        .text("SGST", CXS.sp, y + 3, { width: sgstSpan, align: "center" });
+//     doc.moveTo(CXS.cp, y + 13).lineTo(CXS.sp + sgstSpan, y + 13).stroke(BORD);
+
+//     const HL = y + 15;
+//     doc.fontSize(6).font("Helvetica-Bold").fillColor(DARK);
+//     doc.text("#",                 CXS.sr,   HL, { width: CWS.sr,        align: "center" });
+//     doc.text("Item & Description",CXS.desc, HL, { width: CWS.desc,      align: "left"   });
+//     doc.text("HSN\n/SAC",         CXS.hsn,  HL, { width: CWS.hsn,       align: "center" });
+//     doc.text("Qty",               CXS.qty,  HL, { width: CWS.qty,       align: "center" });
+//     doc.text("Rate",              CXS.rate, HL, { width: CWS.rate - 3,  align: "right"  });
+//     doc.text("%",                 CXS.cp,   HL, { width: CWS.cp,        align: "center" });
+//     doc.text("Amt",               CXS.ca,   HL, { width: CWS.ca - 3,    align: "right"  });
+//     doc.text("%",                 CXS.sp,   HL, { width: CWS.sp,        align: "center" });
+//     doc.text("Amt",               CXS.sa,   HL, { width: CWS.sa - 3,    align: "right"  });
+//     doc.text("Amount",            CXS.amt,  HL, { width: CWS.amt - 3,   align: "right"  });
+
+//     y += HDR_H;
+
+//     const tableRows = items.length
+//       ? items
+//       : [{ description: "Service Charges", quantity: 1, rate: subtotal, amount: subtotal, hsn: "" }];
+
+//     tableRows.forEach((item, idx) => {
+//       const ra = Number(item.amount || 0);
+//       const rq = Number(item.quantity || 1);
+//       const rr = Number(item.rate || ra / Math.max(rq, 1));
+//       const rc = (ra * halfRate) / 100;
+//       const RH = 22;
+
+//       if (idx % 2 === 1) doc.rect(ML, y, CW, RH).fill(BGALT);
+//       doc.rect(ML, y, CW, RH).stroke(BORD);
+//       vLines(y, y + RH);
+
+//       const cy = y + 7;
+//       doc.fillColor(DARK).fontSize(7).font("Helvetica");
+//       doc.text(String(idx + 1),               CXS.sr,     cy, { width: CWS.sr,       align: "center" });
+//       doc.text(item.description || "Service", CXS.desc+3, cy, { width: CWS.desc - 6  });
+//       doc.text(item.hsn || "998313",          CXS.hsn,    cy, { width: CWS.hsn,       align: "center" });
+//       doc.text(String(rq),                    CXS.qty,    cy, { width: CWS.qty,       align: "center" });
+//       doc.text(fmtN(rr),                      CXS.rate,   cy, { width: CWS.rate - 3,  align: "right"  });
+//       doc.text(`${halfRate}%`,                CXS.cp,     cy, { width: CWS.cp,        align: "center" });
+//       doc.text(fmtN(rc),                      CXS.ca,     cy, { width: CWS.ca - 3,    align: "right"  });
+//       doc.text(`${halfRate}%`,                CXS.sp,     cy, { width: CWS.sp,        align: "center" });
+//       doc.text(fmtN(rc),                      CXS.sa,     cy, { width: CWS.sa - 3,    align: "right"  });
+//       doc.font("Helvetica-Bold")
+//          .text(fmtN(ra),                      CXS.amt,    cy, { width: CWS.amt - 3,   align: "right"  });
+
+//       y += RH;
+//     });
+
+//     y += 8;
+
+//     // ── 6. Totals block ───────────────────────────────────────────────────────
+//     //
+//     // ROOT CAUSE OF BROKEN VALUES:
+//     // The Unicode rupee glyph (U+20B9) is NOT included in PDFKit's built-in
+//     // Helvetica font (WinAnsiEncoding). It renders as an empty box/space which
+//     // shifts the text and makes values appear wrong.
+//     //
+//     // FIX: Use ASCII "Rs." prefix via fmtAmt() — always renders correctly.
+//     // Column sizing: TW=240 split into LW=120 label + 114px value.
+//     // 114px at 8.5pt Helvetica-Bold fits "Rs. 1,23,456.00" with room to spare.
+//     //
+//     const TW = 240;
+//     const TX = ML + CW - TW;
+//     const LW = 120;
+//     const VX = TX + LW;
+//     const VW = TW - LW - 4; // 116px value column
+
+//     const totRow = (lbl, val, bold = false, bg = null) => {
+//       const ROW_H = 20;
+//       if (bg) doc.rect(TX, y, TW, ROW_H).fill(bg);
+//       doc.rect(TX, y, TW, ROW_H).stroke(BORD);
+//       doc.moveTo(VX, y).lineTo(VX, y + ROW_H).stroke(BORD);
+//       const sz = bold ? 8.5 : 8;
+//       const fn = bold ? "Helvetica-Bold" : "Helvetica";
+//       // label – left-aligned inside label column
+//       doc.fontSize(sz).font(fn).fillColor(DARK)
+//          .text(lbl, TX + 4, y + 6, { width: LW - 6, lineBreak: false });
+//       // value – right-aligned inside value column, no line break ever
+//       doc.fontSize(sz).font(fn).fillColor(DARK)
+//          .text(val, VX + 2, y + 6, { width: VW - 4, align: "right", lineBreak: false });
+//       y += ROW_H;
+//     };
+
+//     // All values rendered with ASCII "Rs." — zero glyph issues
+//     totRow("Sub Total",   fmtAmt(subtotal));
+//     totRow(`CGST (${halfRate}%)`, fmtAmt(cgstAmt));
+//     totRow(`SGST (${halfRate}%)`, fmtAmt(sgstAmt));
+//     totRow("Total",       fmtAmt(totalAmt), true, BGTOT);
+//     totRow("Balance Due", fmtAmt(balDue),   true, BGBAL);
+
+//     y += 10;
+
+//     // ── 7. Amount in words + Notes ────────────────────────────────────────────
+//     const LCW = CW * 0.62;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Total In Words", ML, y);
+//     y += 12;
+//     doc.fontSize(7.5).font("Helvetica-Oblique").fillColor(DARK)
+//        .text(amountInWords(totalAmt), ML, y, { width: LCW });
+//     y += 16;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Notes", ML, y);
+//     y += 11;
+//     ["Thanks for your business.",
+//      "VASIFY TECHNOLOGIES PRIVATE LIMITED",
+//      "www.vasifytech.com  |  UIN : U62011MH2024PTC421417"].forEach(l => {
+//       doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+//       y += 10;
+//     });
+//     y += 14;
+
+//     // ── 8. Terms & Conditions ─────────────────────────────────────────────────
+//     doc.moveTo(ML, y).lineTo(ML + CW, y).stroke(BORD);
+//     y += 7;
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Terms & Conditions", ML, y);
+//     y += 12;
+//     ["1. Payment due within 5 days of the invoice date.",
+//      "2. Invoice disputes must be communicated within 15 days of the invoice date.",
+//      "3. Contact us at sales@vasifytech.com for any payment-related inquiries."].forEach(t => {
+//       doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(t, ML, y, { width: LCW });
+//       y += 10;
+//     });
+//     y += 8;
+
+//     // ── 9. Payment details ────────────────────────────────────────────────────
+//     doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Payment details :", ML, y);
+//     y += 12;
+//     ["Vasify Technologies Pvt. Ltd.",
+//      "UPI ID : vasifytechnologiesprivateli2529@aubank",
+//      "Ac number 2502267573096282",
+//      "Customer ID 39818327",
+//      "IFSC code AUBL0002675",
+//      "Au bank swift code :-AUBLINBBXXX",
+//      "BRANCH NAME KANDIVALI MAHAVIR NAGAR"].forEach(l => {
+//       doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+//       y += 10;
+//     });
+
+//     // ── 10. Footer ────────────────────────────────────────────────────────────
+//     const FY = PH - 36;
+//     doc.moveTo(ML, FY - 4).lineTo(ML + CW, FY - 4).stroke(BORD);
+//     doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+//        .text("This electronically generated invoice does not necessitate a signature.",
+//          ML + CW * 0.5, FY, { width: CW * 0.5, align: "right" });
+//     doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+//        .text(`Generated on ${new Date().toLocaleDateString("en-IN")} | Vasify Technologies Pvt. Ltd.`,
+//          ML, FY + 12, { align: "center", width: CW });
+
+//     doc.end();
+//   } catch (err) {
+//     console.error("PDF error:", err);
+//     if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF" });
+//   }
+// });
+
+// // ─── GET ALL ──────────────────────────────────────────────────────────────────
+
+// router.get("/", authenticateToken, async (req, res) => {
+//   try {
+//     const page   = Math.max(1, parseInt(req.query.page,  10) || 1);
+//     const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
+//     const offset = (page - 1) * limit;
+//     const { search, status, customerId, isRecurring, dueDateFrom, dueDateTo } = req.query;
+
+//     let where = "WHERE 1=1";
+//     const p   = [];
+
+//     if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
+//     if (search) {
+//       where += " AND (i.invoice_number LIKE ? OR COALESCE(i.customer_name_override,c.name) LIKE ?)";
+//       p.push(`%${search}%`, `%${search}%`);
+//     }
+//     if (status)       { where += " AND i.status = ?";       p.push(status); }
+//     if (customerId)   { where += " AND i.customer_id = ?";  p.push(customerId); }
+//     if (isRecurring !== undefined) {
+//       where += " AND i.is_recurring = ?";
+//       p.push(isRecurring === "true" ? 1 : 0);
+//     }
+//     if (dueDateFrom) { where += " AND i.due_date >= ?"; p.push(dueDateFrom); }
+//     if (dueDateTo)   { where += " AND i.due_date <= ?"; p.push(dueDateTo); }
+
+//     const [invoices] = await pool.execute(
+//       `${INV_SELECT} ${where} ORDER BY i.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+//       sanitize(...p)
+//     );
+
+//     if (invoices.length) {
+//       const ids  = invoices.map(i => i.id);
+//       const ph   = ids.map(() => "?").join(",");
+//       const [all] = await pool.execute(
+//         `SELECT * FROM invoice_items WHERE invoice_id IN (${ph}) ORDER BY created_at`,
+//         sanitize(...ids)
+//       );
+//       invoices.forEach(inv => { inv.items = all.filter(it => it.invoice_id === inv.id); });
+//     }
+
+//     const [[{ total }]] = await pool.execute(
+//       `SELECT COUNT(*) AS total FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where}`,
+//       sanitize(...p)
+//     );
+
+//     res.json({
+//       invoices,
+//       pagination: {
+//         page, limit, total,
+//         totalPages: Math.max(1, Math.ceil(total / limit)),
+//         hasNext: page < Math.ceil(total / limit),
+//         hasPrev: page > 1,
+//       },
+//     });
+//   } catch (err) {
+//     console.error("Invoices fetch:", err);
+//     res.status(500).json({ error: "Failed to fetch invoices" });
+//   }
+// });
+
+// // ─── STATS ────────────────────────────────────────────────────────────────────
+
+// router.get("/stats/overview", authenticateToken, async (req, res) => {
+//   try {
+//     let where = "WHERE 1=1";
+//     const p   = [];
+//     if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
+
+//     const [statusStats] = await pool.execute(
+//       `SELECT i.status, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where} GROUP BY i.status`,
+//       sanitize(...p)
+//     );
+//     const [monthly] = await pool.execute(
+//       `SELECT DATE_FORMAT(i.created_at,'%Y-%m') AS month, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
+//        ${where} AND i.created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
+//        GROUP BY month ORDER BY month`,
+//       sanitize(...p)
+//     );
+//     const [[overdue]] = await pool.execute(
+//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
+//        ${where} AND i.status IN ('sent','overdue','pending') AND i.due_date < CURDATE()`,
+//       sanitize(...p)
+//     );
+//     const [[recurring]] = await pool.execute(
+//       `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+//        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
+//        ${where} AND i.is_recurring = 1`,
+//       sanitize(...p)
+//     );
+
+//     res.json({ statusBreakdown: statusStats, monthlyTrend: monthly, overdue, recurring });
+//   } catch (err) {
+//     console.error("Stats:", err);
+//     res.status(500).json({ error: "Failed to fetch invoice statistics" });
+//   }
+// });
+
+// // ─── GET SINGLE ───────────────────────────────────────────────────────────────
+
+// router.get("/:id", authenticateToken, async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const access = await canAccessInvoice(req, res, id);
+//     if (!access.ok) return;
+
+//     const [[inv]] = await pool.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+//     if (!inv) return res.status(404).json({ error: "Invoice not found" });
+
+//     const [items] = await pool.execute(
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
+//     );
+//     inv.items = items;
+//     res.json({ invoice: inv });
+//   } catch (err) {
+//     console.error("Get invoice:", err);
+//     res.status(500).json({ error: "Failed to fetch invoice" });
+//   }
+// });
+
+// // ─── CREATE ───────────────────────────────────────────────────────────────────
+
+// router.post(
+//   "/",
+//   authenticateToken,
+//   [
+//     body("customerId").notEmpty().withMessage("Customer ID is required"),
+//     body("items").isArray({ min: 1 }).withMessage("At least one item is required"),
+//   ],
+//   async (req, res) => {
+//     if (handleValidation(req, res)) return;
+
+//     const conn = await pool.getConnection();
+//     await conn.beginTransaction();
+
+//     try {
+//       const {
+//         customerId, items,
+//         isRecurring, recurringFrequency, recurringCycles,
+//         recurringStartDate, recurringEndDate,
+//         customerName, customerEmail, customerPhone, customerCompany, customerAddress,
+//         poNumber, terms, placeOfSupply,
+//       } = req.body;
+
+//       const [custs] = await conn.execute(
+//         `SELECT id, assigned_to, default_tax_rate, default_due_days, default_invoice_notes
+//          FROM customers WHERE id = ?`,
+//         sanitize(customerId)
+//       );
+//       if (!custs.length) {
+//         await conn.rollback(); conn.release();
+//         return res.status(400).json({ error: "Customer not found" });
+//       }
+//       const cust = custs[0];
+//       if (req.user.role !== "admin" && cust.assigned_to !== req.user.id) {
+//         await conn.rollback(); conn.release();
+//         return res.status(403).json({ error: "No permission to invoice this customer" });
+//       }
+
+//       const subtotal  = req.body.amount !== undefined
+//         ? Number(req.body.amount)
+//         : items.reduce((s, i) => s + Number(i.amount || 0), 0);
+//       const taxRate   = req.body.tax !== undefined ? Number(req.body.tax) : Number(cust.default_tax_rate || 18);
+//       const gstAmt    = (subtotal * taxRate) / 100;
+//       const total     = req.body.total !== undefined ? Number(req.body.total) : subtotal + gstAmt;
+//       const status    = req.body.status || "draft";
+//       const issueDate = toSqlDate(req.body.issueDate || new Date());
+//       const dueDate   = toSqlDate(req.body.dueDate   || (() => {
+//         const d = new Date(); d.setDate(d.getDate() + Number(cust.default_due_days || 5)); return d;
+//       })());
+//       const notes = req.body.notes ?? cust.default_invoice_notes ?? null;
+
+//       // Invoice number: honour supplied if unique, else auto-generate serial INVxxxx
+//       let invNum = String(req.body.invoiceNumber || "").trim();
+//       if (invNum) {
+//         const [dup] = await conn.execute(
+//           "SELECT id FROM invoices WHERE invoice_number = ?", sanitize(invNum)
+//         );
+//         if (dup.length) invNum = await generateInvNumber(conn);
+//       } else {
+//         invNum = await generateInvNumber(conn);
+//       }
+
+//       const invoiceId = uuidv4();
+
+//       await conn.execute(
+//         `INSERT INTO invoices
+//            (id, customer_id, invoice_number, amount, tax, gst_amount, total, status,
+//             issue_date, due_date, notes,
+//             po_number, terms, place_of_supply,
+//             customer_name_override, customer_email_override,
+//             customer_phone_override, customer_company_override, customer_address_override,
+//             is_recurring, recurring_frequency, recurring_cycles,
+//             recurring_start_date, recurring_end_date)
+//          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+//         sanitize(
+//           invoiceId, customerId, invNum, subtotal, taxRate, gstAmt, total, status,
+//           issueDate, dueDate, notes,
+//           poNumber        || null,
+//           terms           || "due_on_receipt",
+//           placeOfSupply   || "Maharashtra (27)",
+//           customerName    || null,
+//           customerEmail   || null,
+//           customerPhone   || null,
+//           customerCompany || null,
+//           customerAddress || null,
+//           isRecurring ? 1 : 0,
+//           recurringFrequency  || null,
+//           recurringCycles     ? Number(recurringCycles) : null,
+//           recurringStartDate  ? toSqlDate(recurringStartDate) : null,
+//           recurringEndDate    ? toSqlDate(recurringEndDate)   : null
+//         )
+//       );
+
+//       for (const item of items) {
+//         await conn.execute(
+//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+//            VALUES (?,?,?,?,?,?,?,?)`,
+//           sanitize(
+//             uuidv4(), invoiceId,
+//             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+//             item.hsn || "998313",
+//             item.breakdown ? JSON.stringify(item.breakdown) : null
+//           )
+//         );
+//       }
+
+//       await conn.commit();
+
+//       const [[created]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(invoiceId));
+//       const [createdItems] = await conn.execute(
+//         "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(invoiceId)
+//       );
+//       created.items = createdItems;
+
+//       res.status(201).json({ message: "Invoice created successfully", invoice: created });
+//     } catch (err) {
+//       await conn.rollback();
+//       console.error("Create invoice:", err);
+//       res.status(500).json({ error: "Failed to create invoice", details: err.message });
+//     } finally {
+//       conn.release();
+//     }
+//   }
+// );
+
+// // ─── UPDATE ───────────────────────────────────────────────────────────────────
+
+// router.put("/:id", authenticateToken, async (req, res) => {
+//   const { id } = req.params;
+
+//   const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+//   if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
+//   const access = await canAccessInvoice(req, res, id);
+//   if (!access.ok) return;
+
+//   const conn = await pool.getConnection();
+//   await conn.beginTransaction();
+
+//   try {
+//     const data = { ...req.body };
+
+//     if (data.status === "paid" && !data.paidDate) data.paidDate = toSqlDate(new Date());
+
+//     ["issueDate","dueDate","paidDate","recurringStartDate","recurringEndDate"].forEach(k => {
+//       if (data[k]) data[k] = toSqlDate(data[k]);
+//     });
+
+//     const fields = [], values = [];
+//     for (const [key, value] of Object.entries(data)) {
+//       if (key === "items" || value === undefined) continue;
+//       const col = FIELD_MAP[key];
+//       if (!col) continue;
+//       fields.push(`${col} = ?`);
+//       values.push(key === "isRecurring" ? (value ? 1 : 0) : (value === "" ? null : value));
+//     }
+
+//     if (fields.length) {
+//       await conn.execute(
+//         `UPDATE invoices SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+//         sanitize(...values, id)
+//       );
+//     }
+
+//     if (Array.isArray(data.items)) {
+//       await conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
+//       for (const item of data.items) {
+//         await conn.execute(
+//           `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+//            VALUES (?,?,?,?,?,?,?,?)`,
+//           sanitize(
+//             uuidv4(), id,
+//             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+//             item.hsn || "998313",
+//             item.breakdown ? JSON.stringify(item.breakdown) : null
+//           )
+//         );
+//       }
+//     }
+
+//     await conn.commit();
+
+//     const [[updated]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+//     const [updItems]  = await conn.execute(
+//       "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
+//     );
+//     updated.items = updItems;
+
+//     res.json({ message: "Invoice updated successfully", invoice: updated });
+//   } catch (err) {
+//     await conn.rollback();
+//     console.error("Update invoice:", err);
+//     res.status(500).json({ error: "Failed to update invoice" });
+//   } finally {
+//     conn.release();
+//   }
+// });
+
+// // ─── DELETE ───────────────────────────────────────────────────────────────────
+
+// router.delete("/:id", authenticateToken, async (req, res) => {
+//   const { id } = req.params;
+
+//   const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+//   if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
+//   const access = await canAccessInvoice(req, res, id);
+//   if (!access.ok) return;
+
+//   try {
+//     await pool.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
+//     await pool.execute("DELETE FROM invoices WHERE id = ?", sanitize(id));
+//     res.json({ message: "Invoice deleted successfully" });
+//   } catch (err) {
+//     console.error("Delete invoice:", err);
+//     res.status(500).json({ error: "Failed to delete invoice" });
+//   }
+// });
 
 // module.exports = router;
 
 
-//testing (20-05-2026)
 
 
 
 
 
-const { v4: uuidv4 }          = require("uuid");
-const PDFDocument              = require("pdfkit");
-const express                  = require("express");
+
+
+//testing 3
+
+const { v4: uuidv4 }             = require("uuid");
+const PDFDocument                = require("pdfkit");
+const express                    = require("express");
 const { body, validationResult } = require("express-validator");
-const { pool }                 = require("../config/database");
-const { authenticateToken }    = require("../middleware/auth");
+const { pool }                   = require("../config/database");
+const { authenticateToken }      = require("../middleware/auth");
 
 const router = express.Router();
 
@@ -780,10 +1644,7 @@ const toSqlDate = (value) => {
   if (!value) return null;
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return null;
-  const y   = d.getFullYear();
-  const m   = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
 
 const handleValidation = (req, res) => {
@@ -795,144 +1656,577 @@ const handleValidation = (req, res) => {
   return false;
 };
 
-/**
- * Generate a Renalease invoice number: RNL-YYYYMM-XXXX
- * e.g. RNL-202503-0042
- */
-const generateRNLNumber = async (connection) => {
+// ── Generate invoice number: INV-YYYYMM-XXXX
+// If the frontend sends its own number AND it's not a duplicate, honour it.
+const generateInvNumber = async (conn) => {
   const now    = new Date();
   const ym     = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, "0")}`;
-  const prefix = `RNL-${ym}-`;
-
-  const [rows] = await connection.execute(
-    `SELECT invoice_number FROM invoices
-     WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1`,
+  const prefix = `INV-${ym}-`;
+  const [rows] = await conn.execute(
+    `SELECT invoice_number FROM invoices WHERE invoice_number LIKE ? ORDER BY invoice_number DESC LIMIT 1`,
     [`${prefix}%`]
   );
-
-  let seq = 1;
-  if (rows.length > 0) {
-    const last  = rows[0].invoice_number;
-    const parts = last.split("-");
-    seq = (parseInt(parts[parts.length - 1], 10) || 0) + 1;
-  }
+  const seq = rows.length
+    ? (parseInt(rows[0].invoice_number.split("-").pop(), 10) || 0) + 1
+    : 1;
   return `${prefix}${String(seq).padStart(4, "0")}`;
 };
 
-const invoiceFieldMap = {
-  customerId:          "customer_id",
-  amount:              "amount",
-  tax:                 "tax",
-  total:               "total",
-  status:              "status",
-  issueDate:           "issue_date",
-  dueDate:             "due_date",
-  paidDate:            "paid_date",
-  notes:               "notes",
-  isRecurring:         "is_recurring",
-  recurringFrequency:  "recurring_frequency",
-  recurringCycles:     "recurring_cycles",
-  recurringStartDate:  "recurring_start_date",
-  recurringEndDate:    "recurring_end_date",
+// camelCase → snake_case map for UPDATE (only fields that exist after migration)
+const FIELD_MAP = {
+  customerId:              "customer_id",
+  amount:                  "amount",
+  tax:                     "tax",
+  gstAmount:               "gst_amount",
+  total:                   "total",
+  status:                  "status",
+  issueDate:               "issue_date",
+  dueDate:                 "due_date",
+  paidDate:                "paid_date",
+  notes:                   "notes",
+  poNumber:                "po_number",
+  terms:                   "terms",
+  placeOfSupply:           "place_of_supply",
+  customerName:            "customer_name_override",
+  customerEmail:           "customer_email_override",
+  customerPhone:           "customer_phone_override",
+  customerCompany:         "customer_company_override",
+  customerAddress:         "customer_address_override",
+  isRecurring:             "is_recurring",
+  recurringFrequency:      "recurring_frequency",
+  recurringCycles:         "recurring_cycles",
+  recurringStartDate:      "recurring_start_date",
+  recurringEndDate:        "recurring_end_date",
 };
 
 // ─── ACCESS CONTROL ───────────────────────────────────────────────────────────
 
-/**
- * FIX (Bug A): was sanitize(invoiceId, req.user.userId) — userId is undefined.
- * auth.js sets req.user.id, not req.user.userId.
- */
 const canAccessInvoice = async (req, res, invoiceId) => {
   if (req.user.role === "admin") return { ok: true };
   const [rows] = await pool.execute(
     `SELECT i.id FROM invoices i
      INNER JOIN customers c ON i.customer_id = c.id
      WHERE i.id = ? AND c.assigned_to = ?`,
-    sanitize(invoiceId, req.user.id)            // ✅ FIXED: req.user.id
+    sanitize(invoiceId, req.user.id)
   );
-  if (rows.length === 0) {
+  if (!rows.length)
     return { ok: false, response: res.status(403).json({ error: "Access denied" }) };
-  }
   return { ok: true };
 };
 
-// ─── GET ALL INVOICES ─────────────────────────────────────────────────────────
+// ─── AMOUNT IN WORDS ──────────────────────────────────────────────────────────
+
+function amountInWords(amount) {
+  const ones = ["","One","Two","Three","Four","Five","Six","Seven","Eight","Nine",
+                 "Ten","Eleven","Twelve","Thirteen","Fourteen","Fifteen","Sixteen",
+                 "Seventeen","Eighteen","Nineteen"];
+  const tens = ["","","Twenty","Thirty","Forty","Fifty","Sixty","Seventy","Eighty","Ninety"];
+  function convert(n) {
+    if (!n) return "";
+    if (n < 20)       return ones[n] + " ";
+    if (n < 100)      return tens[Math.floor(n / 10)] + " " + ones[n % 10] + " ";
+    if (n < 1000)     return ones[Math.floor(n / 100)] + " Hundred " + convert(n % 100);
+    if (n < 100000)   return convert(Math.floor(n / 1000))    + "Thousand " + convert(n % 1000);
+    if (n < 10000000) return convert(Math.floor(n / 100000))  + "Lakh "     + convert(n % 100000);
+    return               convert(Math.floor(n / 10000000)) + "Crore "    + convert(n % 10000000);
+  }
+  const rupees = Math.floor(amount);
+  const paise  = Math.round((amount - rupees) * 100);
+  let out = "Indian Rupee " + (convert(rupees).trim() || "Zero");
+  if (paise) out += " and " + convert(paise).trim() + " Paise";
+  return out + " Only";
+}
+
+// ─── SELECT HELPER — always use COALESCE override → live customer data ─────────
+
+const INV_SELECT = `
+  SELECT
+    i.*,
+    COALESCE(i.customer_name_override,    c.name)    AS customer_name,
+    COALESCE(i.customer_company_override, c.company) AS customer_company,
+    COALESCE(i.customer_email_override,   c.email)   AS customer_email,
+    COALESCE(i.customer_phone_override,   c.phone)   AS customer_phone,
+    COALESCE(
+      NULLIF(i.customer_address_override, ''),
+      -- Build address from parts; skip country if it already appears in address
+      CONCAT_WS(', ',
+        NULLIF(c.address,''),
+        NULLIF(c.city,''),
+        NULLIF(c.state,''),
+        NULLIF(c.zip_code,''),
+        -- Only append country if not already in address field
+        CASE WHEN c.address IS NOT NULL AND LOWER(c.address) LIKE CONCAT('%', LOWER(IFNULL(c.country,'')), '%')
+             THEN NULL ELSE NULLIF(c.country,'') END
+      ))                                              AS customer_address
+  FROM invoices i
+  LEFT JOIN customers c ON i.customer_id = c.id
+`;
+
+// ─── PDF GENERATION ───────────────────────────────────────────────────────────
+// Exactly matches Vasify Technologies sample invoice (INV-000076):
+// Logo | Company header | TAX INVOICE title
+// Meta box | Bill To / Ship To | Subject
+// Items table (HSN/SAC, Qty, Rate, CGST%, CGST Amt, SGST%, SGST Amt, Amount)
+// Totals | Amount in words | Notes | T&C | Payment details | Footer
+
+router.post("/:id/download", authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const access = await canAccessInvoice(req, res, id);
+    if (!access.ok) return;
+
+    const [invRows] = await pool.execute(
+      INV_SELECT + " WHERE i.id = ?",
+      sanitize(id)
+    );
+    if (!invRows.length) return res.status(404).json({ error: "Invoice not found" });
+
+    const [items] = await pool.execute(
+      "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
+      sanitize(id)
+    );
+
+    const inv = invRows[0];
+
+    // ── Financials: always recalculate from items when available ────────────
+    // Never blindly trust inv.total/inv.amount from DB — they may be 0 or stale.
+    // Re-derive subtotal from actual line items so the PDF is always accurate.
+    let subtotal;
+    if (items.length > 0) {
+      subtotal = items.reduce((s, it) => s + Number(it.amount || 0), 0);
+    } else {
+      subtotal = Number(inv.amount || 0);
+    }
+
+    const gstRate  = Number(inv.tax || 18);
+    const halfRate = gstRate / 2;
+    const cgstAmt  = (subtotal * halfRate) / 100;
+    const sgstAmt  = cgstAmt;
+    // totalAmt = subtotal + GST, never use stored inv.total which may be 0
+    const totalAmt  = subtotal + cgstAmt + sgstAmt;
+    // balDue: 0 if paid (trim + lowercase for safe MySQL string comparison)
+    const invStatus = String(inv.status || "").trim().toLowerCase();
+    const balDue    = invStatus === "paid" ? 0 : totalAmt;
+    const logoB64  = req.body?.logoBase64 ?? null;
+
+    const termsLabel = {
+      net_7: "Net 7", net_15: "Net 15", net_30: "Net 30",
+      net_45: "Net 45", net_60: "Net 60",
+    }[inv.terms] || "Due on Receipt";
+
+    const fmtD = (v) => {
+      if (!v) return "—";
+      const d = new Date(v);
+      return isNaN(d.getTime()) ? "—"
+        : d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+    };
+    const fmtN = (n) => Number(n || 0).toFixed(2);
+
+    // ── PDFKit ────────────────────────────────────────────────────────────────
+    const doc = new PDFDocument({ size: "A4", margin: 0, autoFirstPage: true });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition",
+      `attachment; filename=invoice-${inv.invoice_number || "NA"}.pdf`);
+    doc.pipe(res);
+
+    const DARK  = "#1A1A1A", GRAY = "#555555", LGRAY = "#888888";
+    const BORD  = "#CCCCCC", BGH  = "#F5F5F5", BGALT = "#FAFAFA";
+    const BGTOT = "#EEEEEE", BGBAL = "#E8F5E9";
+
+    const PW = 595.28, PH = 841.89, ML = 30, MR = 30, CW = PW - ML - MR;
+    let y = 30;
+
+    // ── 1. Logo + company ─────────────────────────────────────────────────────
+    if (logoB64) {
+      try {
+        const raw = logoB64.includes(",") ? logoB64.split(",")[1] : logoB64;
+        doc.image(Buffer.from(raw, "base64"), ML, y, { fit: [120, 55] });
+      } catch (e) { console.warn("Logo render:", e.message); }
+    }
+
+    const CX = ML + 130;
+    doc.fontSize(11).font("Helvetica-Bold").fillColor(DARK)
+       .text("Vasify Technologies Pvt. Ltd.", CX, y, { width: CW - 130 });
+    y += 14;
+    doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+       .text("Axiom Milan CHS, 607, 22 Datta Mandir road\nDhanakurwadi, Kandivali West.\nMumbai Maharashtra 400067\nIndia",
+         CX, y, { width: CW - 130, lineGap: 1 });
+    y += 42;
+    ["Company ID : U62011MH2024PTC421417","GSTIN: 27AAKCV0353N1ZW","PAN: AAKCV0353N",
+     "Tax ID ::MUMV33878F","www.vasifytech.com"].forEach(l => {
+      doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, CX, y, { width: CW - 130 });
+      y += 10;
+    });
+
+    doc.fontSize(26).font("Helvetica-Bold").fillColor(DARK)
+       .text("TAX INVOICE", PW - MR - 180, 30, { align: "right", width: 180 });
+
+    y = Math.max(y, 122) + 4;
+
+    // ── 2. Meta box ───────────────────────────────────────────────────────────
+    const MBH = 68, HW = CW / 2;
+    doc.rect(ML, y, CW, MBH).stroke(BORD);
+    doc.moveTo(ML + HW, y).lineTo(ML + HW, y + MBH).stroke(BORD);
+    doc.moveTo(ML, y + 14).lineTo(ML + CW, y + 14).stroke(BORD);
+
+    // Left col
+    const LR = [
+      ["#",            inv.invoice_number || "—"],
+      ["Invoice Date",  fmtD(inv.issue_date || inv.created_at)],
+      ["Terms",         termsLabel],
+      ["Due Date",      fmtD(inv.due_date)],
+      ["P.O.#",         inv.po_number || "—"],
+    ];
+    LR.forEach(([lbl, val], i) => {
+      const ry = y + 16 + i * 10;
+      doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + 4, ry, { width: HW * 0.42 });
+      doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW * 0.44, ry, { width: HW * 0.54, lineBreak: false });
+    });
+
+    // Right col header
+    doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY)
+       .text("Place Of Supply", ML + HW + 4, y + 4, { width: 70 });
+    doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+       .text(`: ${inv.place_of_supply || "Maharashtra (27)"}`, ML + HW + 76, y + 4, { width: HW - 80 });
+
+    [["#", inv.invoice_number || "—"],
+     ["Invoice Date", fmtD(inv.issue_date || inv.created_at)],
+     ["Terms", termsLabel],
+     ["Due Date", fmtD(inv.due_date)]].forEach(([lbl, val], i) => {
+      const ry = y + 16 + i * 11;
+      doc.fontSize(6.5).font("Helvetica-Bold").fillColor(GRAY).text(`${lbl} :`, ML + HW + 4, ry, { width: 58 });
+      doc.fontSize(6.5).font("Helvetica").fillColor(DARK).text(val, ML + HW + 64, ry, { width: HW - 68, lineBreak: false });
+    });
+
+    y += MBH + 6;
+
+    // ── 3. Bill To / Ship To ──────────────────────────────────────────────────
+    // FIX 3: customer_address already contains city/state/zip/country from
+    //        CONCAT_WS in the SQL query — don't repeat those fields.
+    // FIX 4: dynamically compute box height so long addresses don't overflow.
+
+    const AW = HW - 3, SX = ML + HW + 3;
+
+    // Clean the address: remove consecutive duplicate comma-separated segments
+    // e.g. "Mumbai, Mumbai, India, India" → "Mumbai, India"
+    const cleanAddress = (addr) => {
+      if (!addr) return null;
+      const parts = addr.split(",").map(p => p.trim()).filter(Boolean);
+      const deduped = [];
+      parts.forEach(p => {
+        if (!deduped.length || deduped[deduped.length - 1].toLowerCase() !== p.toLowerCase()) {
+          deduped.push(p);
+        }
+      });
+      return deduped.join(", ");
+    };
+
+    const addrLines = [
+      inv.customer_company ? cleanAddress(inv.customer_company) : null,
+      inv.customer_address ? cleanAddress(inv.customer_address) : null,
+      inv.customer_email   ? `Email: ${inv.customer_email}` : null,
+      inv.customer_phone   ? `Phone: ${inv.customer_phone}` : null,
+    ].filter(Boolean);
+
+    // Wrap long address lines to estimate rendered height
+    const wrapLine = (text, maxChars) => {
+      if (!text || text.length <= maxChars) return [text];
+      const words = text.split(" ");
+      const lines = [];
+      let cur = "";
+      words.forEach(w => {
+        if ((cur + " " + w).trim().length > maxChars) { lines.push(cur.trim()); cur = w; }
+        else cur = (cur + " " + w).trim();
+      });
+      if (cur) lines.push(cur);
+      return lines;
+    };
+
+    // At 7.5pt Helvetica in ~244px (AW-12) column, ~55 chars fit per line.
+    // Must match LINE_H_SM=11, LINE_H_LG=14, BOX_TOP_PAD=18 used in drawAddrBox.
+    const MAX_CHARS = 55;
+    let wrappedLineCount = 0;
+    addrLines.forEach(l => { if (l) wrappedLineCount += wrapLine(l, MAX_CHARS).length; });
+    // 18px top pad + 14px name + 11px×lines + 10px bottom pad
+    const AH = Math.max(90, 18 + 14 + wrappedLineCount * 11 + 10);
+
+    // Draw address box with fully manual y-tracking (no doc.y dependency).
+    // Every text call uses explicit absolute coordinates so boxes never
+    // affect each other's cursor position.
+    const LINE_H_SM = 11;   // 7.5pt line height
+    const LINE_H_LG = 14;   // 9pt name line height
+    const BOX_TOP_PAD = 18; // distance from box top to first content line
+
+    const drawAddrBox = (ox, title) => {
+      // Draw the box border and header
+      doc.rect(ox, y, AW, AH).stroke(BORD);
+      doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY)
+         .text(title, ox + 6, y + 5, { width: AW - 12, lineBreak: false });
+      doc.moveTo(ox, y + 14).lineTo(ox + AW, y + 14).stroke(BORD);
+
+      // Track y manually — never touch doc.y here
+      let ay = y + BOX_TOP_PAD;
+      const maxY = y + AH - 4; // clip boundary
+
+      // Customer name (9pt bold)
+      if (ay < maxY) {
+        doc.fontSize(9).font("Helvetica-Bold").fillColor(DARK)
+           .text(inv.customer_name || "—", ox + 6, ay, { width: AW - 12, lineBreak: false });
+        ay += LINE_H_LG;
+      }
+
+      // Each address line — pre-wrap then draw each sub-line separately
+      addrLines.forEach(l => {
+        if (!l || ay >= maxY) return;
+        const subLines = wrapLine(l, MAX_CHARS);
+        subLines.forEach(sl => {
+          if (!sl || ay >= maxY) return;
+          doc.fontSize(7.5).font("Helvetica").fillColor(GRAY)
+             .text(sl, ox + 6, ay, { width: AW - 12, lineBreak: false });
+          ay += LINE_H_SM;
+        });
+      });
+    };
+    drawAddrBox(ML, "Bill To");
+    drawAddrBox(SX, "Ship To");
+    y += AH + 6;
+
+    // ── 4. Subject line ───────────────────────────────────────────────────────
+    const subject = inv.po_number || null;
+    if (subject) {
+      doc.rect(ML, y, CW, 22).stroke(BORD);
+      doc.fontSize(7.5).font("Helvetica-Bold").fillColor(GRAY).text("Subject :", ML + 6, y + 7);
+      doc.fontSize(7.5).font("Helvetica").fillColor(DARK)
+         .text(subject, ML + 58, y + 7, { width: CW - 64, lineBreak: false });
+      y += 28;
+    }
+
+    // ── 5. Items table ────────────────────────────────────────────────────────
+    // Widths must total CW (535.28)
+    const CWS = { sr:22, desc:143, hsn:42, qty:28, rate:55, cp:25, ca:45, sp:25, sa:45, amt:0 };
+    CWS.amt = CW - CWS.sr - CWS.desc - CWS.hsn - CWS.qty - CWS.rate - CWS.cp - CWS.ca - CWS.sp - CWS.sa;
+
+    const CXS = {};
+    let ax = ML;
+    for (const [k, w] of Object.entries(CWS)) { CXS[k] = ax; ax += w; }
+
+    const vLines = (fy, ty) =>
+      Object.values(CXS).slice(1).forEach(x => doc.moveTo(x, fy).lineTo(x, ty).stroke(BORD));
+
+    const HDR_H = 28;
+    doc.rect(ML, y, CW, HDR_H).fill(BGH).stroke(BORD);
+    vLines(y, y + HDR_H);
+
+    const cgstSpan = CWS.cp + CWS.ca, sgstSpan = CWS.sp + CWS.sa;
+    doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+       .text("CGST", CXS.cp, y + 3, { width: cgstSpan, align: "center" });
+    doc.fontSize(6.5).font("Helvetica-Bold").fillColor(DARK)
+       .text("SGST", CXS.sp, y + 3, { width: sgstSpan, align: "center" });
+    doc.moveTo(CXS.cp, y + 13).lineTo(CXS.sp + sgstSpan, y + 13).stroke(BORD);
+
+    const HL = y + 15;
+    doc.fontSize(6).font("Helvetica-Bold").fillColor(DARK);
+    doc.text("#",                 CXS.sr,   HL, { width: CWS.sr,        align: "center" });
+    doc.text("Item & Description",CXS.desc, HL, { width: CWS.desc,      align: "left"   });
+    doc.text("HSN\n/SAC",         CXS.hsn,  HL, { width: CWS.hsn,       align: "center" });
+    doc.text("Qty",               CXS.qty,  HL, { width: CWS.qty,       align: "center" });
+    doc.text("Rate",              CXS.rate, HL, { width: CWS.rate - 3,  align: "right"  });
+    doc.text("%",                 CXS.cp,   HL, { width: CWS.cp,        align: "center" });
+    doc.text("Amt",               CXS.ca,   HL, { width: CWS.ca - 3,    align: "right"  });
+    doc.text("%",                 CXS.sp,   HL, { width: CWS.sp,        align: "center" });
+    doc.text("Amt",               CXS.sa,   HL, { width: CWS.sa - 3,    align: "right"  });
+    doc.text("Amount",            CXS.amt,  HL, { width: CWS.amt - 3,   align: "right"  });
+
+    y += HDR_H;
+
+    // Format rate label for item rows (same as totals)
+    const fmtRate  = (r) => Number.isInteger(r) ? String(r) : r.toFixed(1).replace(/\.0$/, "");
+    const rateLabel = fmtRate(halfRate);
+
+    const tableRows = items.length
+      ? items
+      : [{ description: "Service Charges", quantity: 1, rate: subtotal, amount: subtotal, hsn: "" }];
+
+    tableRows.forEach((item, idx) => {
+      const ra  = Number(item.amount   || 0);
+      const rq  = Number(item.quantity || 1);
+      // FIX 1+5: Rate display logic
+      // item.rate from DB may be 1.00 if the frontend sent qty*rate=amount but
+      // rate field wasn't set correctly. When rate * qty differs significantly
+      // from amount, use amount/qty as the display rate (more meaningful).
+      const rawRate     = Number(item.rate) || 0;
+      const derivedRate = rq > 0 ? ra / rq : ra;
+      // If stored rate × qty is within 1% of amount → use stored rate
+      // Otherwise the rate was likely not set correctly → derive from amount÷qty
+      const rateMatchesAmount = Math.abs(rawRate * rq - ra) < Math.max(ra * 0.01, 0.01);
+      const rr  = (rawRate > 0 && rateMatchesAmount) ? rawRate : derivedRate;
+      const rc  = (ra * halfRate) / 100;
+      const RH = 22;
+
+      if (idx % 2 === 1) doc.rect(ML, y, CW, RH).fill(BGALT);
+      doc.rect(ML, y, CW, RH).stroke(BORD);
+      vLines(y, y + RH);
+
+      const cy = y + 7;
+      doc.fillColor(DARK).fontSize(7).font("Helvetica");
+      doc.text(String(idx + 1),               CXS.sr,    cy, { width: CWS.sr,       align: "center" });
+      doc.text(item.description || "Service", CXS.desc+3, cy, { width: CWS.desc - 6 });
+      doc.text(item.hsn || "998313",          CXS.hsn,   cy, { width: CWS.hsn,      align: "center" });
+      doc.text(String(rq),                    CXS.qty,   cy, { width: CWS.qty,      align: "center" });
+      doc.text(fmtN(rr),                      CXS.rate,  cy, { width: CWS.rate - 3, align: "right"  });
+      doc.text(`${rateLabel}%`,              CXS.cp,    cy, { width: CWS.cp,       align: "center" });
+      doc.text(fmtN(rc),                      CXS.ca,    cy, { width: CWS.ca - 3,   align: "right"  });
+      doc.text(`${rateLabel}%`,              CXS.sp,    cy, { width: CWS.sp,       align: "center" });
+      doc.text(fmtN(rc),                      CXS.sa,    cy, { width: CWS.sa - 3,   align: "right"  });
+      doc.font("Helvetica-Bold")
+         .text(fmtN(ra),                      CXS.amt,   cy, { width: CWS.amt - 3,  align: "right"  });
+
+      y += RH;
+    });
+
+    y += 8;
+
+    // ── 6. Totals block ───────────────────────────────────────────────────────
+    // Wider label column so "CGST9.0 (9.0%)" etc. doesn't clip
+    const TW = 205, TX = ML + CW - TW, LW = 120, VX = TX + LW, VW = TW - LW - 4;
+
+    const totRow = (lbl, val, bold = false, bg = null) => {
+      if (bg) doc.rect(TX, y, TW, 18).fill(bg);
+      doc.rect(TX, y, TW, 18).stroke(BORD);
+      doc.moveTo(VX, y).lineTo(VX, y + 18).stroke(BORD);
+      const sz = bold ? 8.5 : 8, fn = bold ? "Helvetica-Bold" : "Helvetica";
+      doc.fontSize(sz).font(fn).fillColor(DARK).text(lbl, TX + 3, y + 4, { width: LW - 3 });
+      doc.fontSize(sz).font(fn).fillColor(DARK).text(val, VX + 2, y + 4, { width: VW, align: "right" });
+      y += 18;
+    };
+
+    totRow("Sub Total",                                fmtN(subtotal));
+    totRow(`CGST${rateLabel} (${rateLabel}%)`,         fmtN(cgstAmt));
+    totRow(`SGST${rateLabel} (${rateLabel}%)`,         fmtN(sgstAmt));
+    totRow("Total",      `Rs. ${fmtN(totalAmt)}`,      true, BGTOT);
+    totRow("Balance Due",`Rs. ${fmtN(balDue)}`,        true, BGBAL);
+
+    y += 10;
+
+    // ── 7. Amount in words + Notes ────────────────────────────────────────────
+    const LCW = CW * 0.62;
+    doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Total In Words", ML, y);
+    y += 12;
+    doc.fontSize(7.5).font("Helvetica-Oblique").fillColor(DARK)
+       .text(amountInWords(totalAmt), ML, y, { width: LCW });
+    y += 16;
+    doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Notes", ML, y);
+    y += 11;
+    ["Thanks for your business.",
+     "VASIFY TECHNOLOGIES PRIVATE LIMITED",
+     "www.vasifytech.com  |  UIN : U62011MH2024PTC421417"].forEach(l => {
+      doc.fontSize(7.5).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+      y += 10;
+    });
+    y += 14;
+
+    // ── 8. Terms & Conditions ─────────────────────────────────────────────────
+    doc.moveTo(ML, y).lineTo(ML + CW, y).stroke(BORD);
+    y += 7;
+    doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Terms & Conditions", ML, y);
+    y += 12;
+    ["1. Payment due within 5 days of the invoice date.",
+     "2. Invoice disputes must be communicated within 15 days of the invoice date.",
+     "3. Contact us at sales@vasifytech.com for any payment-related inquiries."].forEach(t => {
+      doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(t, ML, y, { width: LCW });
+      y += 10;
+    });
+    y += 8;
+
+    // ── 9. Payment details ────────────────────────────────────────────────────
+    doc.fontSize(7.5).font("Helvetica-Bold").fillColor(DARK).text("Payment details :", ML, y);
+    y += 12;
+    ["Vasify Technologies Pvt. Ltd.",
+     "UPI ID : vasifytechnologiesprivateli2529@aubank",
+     "Ac number 2502267573096282",
+     "Customer ID 39818327",
+     "IFSC code AUBL0002675",
+     "Au bank swift code :-AUBLINBBXXX",
+     "BRANCH NAME KANDIVALI MAHAVIR NAGAR"].forEach(l => {
+      doc.fontSize(7).font("Helvetica").fillColor(GRAY).text(l, ML, y, { width: LCW });
+      y += 10;
+    });
+
+    // ── 10. Footer ────────────────────────────────────────────────────────────
+    const FY = PH - 36;
+    doc.moveTo(ML, FY - 4).lineTo(ML + CW, FY - 4).stroke(BORD);
+    doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+       .text("This electronically generated invoice does not necessitate a signature.",
+         ML + CW * 0.5, FY, { width: CW * 0.5, align: "right" });
+    doc.fontSize(7).font("Helvetica").fillColor(LGRAY)
+       .text(`Generated on ${new Date().toLocaleDateString("en-IN")} | Vasify Technologies Pvt. Ltd.`,
+         ML, FY + 12, { align: "center", width: CW });
+
+    doc.end();
+  } catch (err) {
+    console.error("PDF error:", err);
+    if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF" });
+  }
+});
+
+// ─── GET ALL ──────────────────────────────────────────────────────────────────
 
 router.get("/", authenticateToken, async (req, res) => {
   try {
     const page   = Math.max(1, parseInt(req.query.page,  10) || 1);
     const limit  = Math.min(200, Math.max(1, parseInt(req.query.limit, 10) || 50));
     const offset = (page - 1) * limit;
-
     const { search, status, customerId, isRecurring, dueDateFrom, dueDateTo } = req.query;
 
-    let where    = "WHERE 1=1";
-    const params = [];
+    let where = "WHERE 1=1";
+    const p   = [];
 
-    /**
-     * FIX (Bug B): was req.user.userId — always undefined → sanitize converts
-     * to null → WHERE c.assigned_to = NULL matches nothing (SQL NULL ≠ NULL).
-     * Non-admin users saw 0 invoices.
-     */
-    if (req.user.role !== "admin") {
-      where += " AND c.assigned_to = ?";
-      params.push(req.user.id);                 // ✅ FIXED: req.user.id
-    }
-
+    if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
     if (search) {
-      where += " AND (i.invoice_number LIKE ? OR c.name LIKE ? OR c.company LIKE ?)";
-      const s = `%${search}%`;
-      params.push(s, s, s);
+      where += " AND (i.invoice_number LIKE ? OR COALESCE(i.customer_name_override,c.name) LIKE ?)";
+      p.push(`%${search}%`, `%${search}%`);
     }
-
-    if (status)     { where += " AND i.status = ?";      params.push(status); }
-    if (customerId) { where += " AND i.customer_id = ?"; params.push(customerId); }
+    if (status)       { where += " AND i.status = ?";       p.push(status); }
+    if (customerId)   { where += " AND i.customer_id = ?";  p.push(customerId); }
     if (isRecurring !== undefined) {
       where += " AND i.is_recurring = ?";
-      params.push(isRecurring === "true" ? 1 : 0);
+      p.push(isRecurring === "true" ? 1 : 0);
     }
-    if (dueDateFrom) { where += " AND i.due_date >= ?"; params.push(dueDateFrom); }
-    if (dueDateTo)   { where += " AND i.due_date <= ?"; params.push(dueDateTo); }
+    if (dueDateFrom) { where += " AND i.due_date >= ?"; p.push(dueDateFrom); }
+    if (dueDateTo)   { where += " AND i.due_date <= ?"; p.push(dueDateTo); }
 
     const [invoices] = await pool.execute(
-      `SELECT i.*,
-              c.name    AS customer_name,
-              c.company AS customer_company,
-              c.email   AS customer_email,
-              c.phone   AS customer_phone
-       FROM invoices i
-       LEFT JOIN customers c ON i.customer_id = c.id
-       ${where}
-       ORDER BY i.created_at DESC
-       LIMIT ${limit} OFFSET ${offset}`,
-      sanitize(...params)
+      `${INV_SELECT} ${where} ORDER BY i.created_at DESC LIMIT ${limit} OFFSET ${offset}`,
+      sanitize(...p)
     );
 
-    if (invoices.length > 0) {
-      const ids          = invoices.map((i) => i.id);
-      const placeholders = ids.map(() => "?").join(",");
-      const [allItems]   = await pool.execute(
-        `SELECT * FROM invoice_items WHERE invoice_id IN (${placeholders}) ORDER BY created_at`,
+    if (invoices.length) {
+      const ids  = invoices.map(i => i.id);
+      const ph   = ids.map(() => "?").join(",");
+      const [all] = await pool.execute(
+        `SELECT * FROM invoice_items WHERE invoice_id IN (${ph}) ORDER BY created_at`,
         sanitize(...ids)
       );
-      invoices.forEach((inv) => {
-        inv.items = allItems.filter((it) => it.invoice_id === inv.id);
-      });
+      invoices.forEach(inv => { inv.items = all.filter(it => it.invoice_id === inv.id); });
     }
 
     const [[{ total }]] = await pool.execute(
       `SELECT COUNT(*) AS total FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where}`,
-      sanitize(...params)
+      sanitize(...p)
     );
-
-    const totalPages = total > 0 ? Math.ceil(total / limit) : 1;
 
     res.json({
       invoices,
-      pagination: { page, limit, total, totalPages, hasNext: page < totalPages, hasPrev: page > 1 },
+      pagination: {
+        page, limit, total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+        hasNext: page < Math.ceil(total / limit),
+        hasPrev: page > 1,
+      },
     });
   } catch (err) {
-    console.error("Invoices fetch error:", err);
+    console.error("Invoices fetch:", err);
     res.status(500).json({ error: "Failed to fetch invoices" });
   }
 });
@@ -941,546 +2235,285 @@ router.get("/", authenticateToken, async (req, res) => {
 
 router.get("/stats/overview", authenticateToken, async (req, res) => {
   try {
-    let where    = "WHERE 1=1";
-    const params = [];
-
-    /**
-     * FIX (Bug C-1): was req.user.userId.
-     * Non-admin stats queries matched nothing.
-     */
-    if (req.user.role !== "admin") {
-      where += " AND c.assigned_to = ?";
-      params.push(req.user.id);                 // ✅ FIXED: req.user.id
-    }
+    let where = "WHERE 1=1";
+    const p   = [];
+    if (req.user.role !== "admin") { where += " AND c.assigned_to = ?"; p.push(req.user.id); }
 
     const [statusStats] = await pool.execute(
-      `SELECT i.status, COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
-       FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
-       ${where} GROUP BY i.status`,
-      sanitize(...params)
+      `SELECT i.status, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
+       FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id ${where} GROUP BY i.status`,
+      sanitize(...p)
     );
-
     const [monthly] = await pool.execute(
-      `SELECT DATE_FORMAT(i.created_at, '%Y-%m') AS month,
-              COUNT(*) AS count,
-              COALESCE(SUM(i.total), 0) AS total_amount
+      `SELECT DATE_FORMAT(i.created_at,'%Y-%m') AS month, COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
        ${where} AND i.created_at >= DATE_SUB(NOW(), INTERVAL 12 MONTH)
        GROUP BY month ORDER BY month`,
-      sanitize(...params)
+      sanitize(...p)
     );
-
     const [[overdue]] = await pool.execute(
-      `SELECT COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
+      `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
-       ${where} AND i.status IN ('sent','overdue') AND i.due_date < CURDATE()`,
-      sanitize(...params)
+       ${where} AND i.status IN ('sent','overdue','pending') AND i.due_date < CURDATE()`,
+      sanitize(...p)
     );
-
     const [[recurring]] = await pool.execute(
-      `SELECT COUNT(*) AS count, COALESCE(SUM(i.total), 0) AS total_amount
+      `SELECT COUNT(*) AS count, COALESCE(SUM(i.total),0) AS total_amount
        FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id
        ${where} AND i.is_recurring = 1`,
-      sanitize(...params)
+      sanitize(...p)
     );
 
     res.json({ statusBreakdown: statusStats, monthlyTrend: monthly, overdue, recurring });
   } catch (err) {
-    console.error("Invoice stats error:", err);
+    console.error("Stats:", err);
     res.status(500).json({ error: "Failed to fetch invoice statistics" });
   }
 });
 
-// ─── DOWNLOAD PDF ─────────────────────────────────────────────────────────────
+// ─── GET SINGLE ───────────────────────────────────────────────────────────────
 
-router.post("/:id/download", async (req, res) => {
+router.get("/:id", authenticateToken, async (req, res) => {
   try {
-    const { id }          = req.params;
-    const logoBase64      = req.body?.logoBase64 ?? null;
+    const { id } = req.params;
+    const access = await canAccessInvoice(req, res, id);
+    if (!access.ok) return;
 
-    const [invRows] = await pool.execute(
-      `SELECT i.*,
-              c.name    AS customername,
-              c.email   AS customeremail,
-              c.phone   AS customerphone,
-              c.company AS customercompany,
-              c.address AS customeraddress,
-              c.city    AS customercity,
-              c.state   AS customerstate,
-              c.country AS customercountry
-       FROM invoices i
-       LEFT JOIN customers c ON i.customer_id = c.id
-       WHERE i.id = ?`,
-      sanitize(id)
-    );
-
-    if (!invRows || invRows.length === 0) {
-      return res.status(404).json({ error: "Invoice not found" });
-    }
+    const [[inv]] = await pool.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+    if (!inv) return res.status(404).json({ error: "Invoice not found" });
 
     const [items] = await pool.execute(
-      "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-      sanitize(id)
+      "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
     );
-
-    const inv       = invRows[0];
-    const subtotal  = Number(inv.amount || 0);
-    const gstRate   = Number(inv.tax    || 18);
-    const gstAmount = (subtotal * gstRate) / 100;
-    const totalAmt  = Number(inv.total  || subtotal + gstAmount);
-
-    const fmtDate = (value) => {
-      if (!value) return new Date().toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return fmtDate(null);
-      return d.toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
-    };
-
-    const fmtCurrency = (n) => `Rs. ${Number(n).toFixed(2)}`;
-
-    const doc = new PDFDocument({ size: "A4", margin: 40 });
-    res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename=invoice-${inv.invoice_number || "NA"}.pdf`);
-    doc.pipe(res);
-
-    const brandPrimary   = "#0F4C81";
-    const brandSecondary = "#1E88E5";
-    const accentTeal     = "#00897B";
-    const accentGold     = "#F9A825";
-    const textDark       = "#1A2332";
-    const textGray       = "#64748B";
-    const bgLight        = "#F8FAFC";
-    const borderGray     = "#E2E8F0";
-
-    const PAGE_W = 595.28;
-    const ML     = 40;
-    const MR     = 40;
-    const CW     = PAGE_W - ML - MR;
-
-    let y = 40;
-
-    if (logoBase64) {
-      try {
-        const imgData = logoBase64.includes(",") ? logoBase64.split(",")[1] : logoBase64;
-        doc.image(Buffer.from(imgData, "base64"), ML, y, { width: 140, fit: [140, 55] });
-      } catch (e) { console.error("Logo error:", e); }
-    }
-
-    doc.fontSize(18).font("Helvetica-Bold").fillColor(brandPrimary)
-       .text("Renalease", PAGE_W - MR - 160, y + 4, { align: "right", width: 160 });
-    doc.fontSize(8.5).font("Helvetica").fillColor(textGray)
-       .text("Kidney Care & Nephrology Services", PAGE_W - MR - 160, y + 26, { align: "right", width: 160 });
-
-    y += 65;
-    doc.rect(ML, y, CW, 34).fillAndStroke(brandPrimary, brandPrimary);
-    doc.fontSize(20).font("Helvetica-Bold").fillColor("#FFFFFF")
-       .text("TAX INVOICE", ML, y + 8, { align: "center", width: CW });
-    y += 44;
-
-    doc.rect(ML, y, CW, 26).fillAndStroke(bgLight, borderGray);
-
-    const metaItems = [
-      { label: "Invoice No", value: inv.invoice_number || "—" },
-      { label: "Issue Date",  value: fmtDate(inv.issue_date || inv.created_at) },
-      { label: "Due Date",    value: fmtDate(inv.due_date) },
-      { label: "Status",      value: (inv.status || "draft").toUpperCase() },
-    ];
-
-    const metaColW = CW / metaItems.length;
-    metaItems.forEach((m, i) => {
-      const mx = ML + i * metaColW;
-      doc.fontSize(7).font("Helvetica-Bold").fillColor(textGray)
-         .text(m.label, mx + 6, y + 5, { width: metaColW - 8 });
-      doc.fontSize(8).font("Helvetica-Bold")
-         .fillColor(m.label === "Status" ? accentTeal : textDark)
-         .text(m.value, mx + 6, y + 14, { width: metaColW - 8 });
-    });
-    y += 36;
-
-    const halfW  = (CW - 12) / 2;
-    const fromX  = ML;
-    const toX    = ML + halfW + 12;
-    const blockY = y;
-
-    doc.rect(fromX, blockY, halfW, 90).fillAndStroke(bgLight, borderGray);
-    doc.fontSize(8).font("Helvetica-Bold").fillColor(brandPrimary).text("FROM", fromX + 8, blockY + 8);
-    doc.fontSize(9).font("Helvetica-Bold").fillColor(textDark)
-       .text("Vasify Technologies Pvt. Ltd.", fromX + 8, blockY + 20);
-    doc.fontSize(7.5).font("Helvetica").fillColor(textGray)
-       .text(
-         "102, Dani Sanjay Apartment, Datta Mandir Road,\nDahanukar Wadi, Kandivali West,\nMumbai, Maharashtra – 400067\nPhone: +91-9769754446",
-         fromX + 8, blockY + 34,
-         { width: halfW - 16, lineGap: 2 }
-       );
-
-    doc.rect(toX, blockY, halfW, 90).fillAndStroke("#EEF7FF", brandSecondary);
-    doc.fontSize(8).font("Helvetica-Bold").fillColor(brandSecondary).text("BILL TO", toX + 8, blockY + 8);
-    doc.fontSize(9.5).font("Helvetica-Bold").fillColor(textDark)
-       .text(inv.customername || "Patient Name", toX + 8, blockY + 20);
-
-    let toY = blockY + 35;
-    const toDetails = [
-      inv.customercompany,
-      inv.customeremail ? `Email: ${inv.customeremail}` : null,
-      inv.customerphone ? `Phone: ${inv.customerphone}` : null,
-      [inv.customeraddress, inv.customercity, inv.customerstate, inv.customercountry].filter(Boolean).join(", ") || null,
-    ].filter(Boolean);
-
-    toDetails.forEach((line) => {
-      doc.fontSize(7.5).font("Helvetica").fillColor(textGray).text(line, toX + 8, toY, { width: halfW - 16 });
-      toY += 12;
-    });
-
-    y = blockY + 100;
-
-    const colSr   = { x: ML,             w: 35 };
-    const colDesc = { x: ML + 35,        w: CW - 35 - 100 };
-    const colAmt  = { x: ML + CW - 100,  w: 100 };
-
-    doc.rect(ML, y, CW, 24).fillAndStroke(brandPrimary, brandPrimary);
-    [
-      { label: "Sr.",                   x: colSr.x,   w: colSr.w,   align: "center" },
-      { label: "Service / Description", x: colDesc.x + 6, w: colDesc.w - 12, align: "left" },
-      { label: "Amount (Rs.)",          x: colAmt.x,  w: colAmt.w,  align: "right" },
-    ].forEach(({ label, x, w, align }) => {
-      doc.fontSize(8.5).font("Helvetica-Bold").fillColor("#FFFFFF").text(label, x, y + 8, { width: w, align });
-    });
-    y += 24;
-
-    const tableRows = items.length > 0 ? items : [{ description: "Medical Service Charges", amount: subtotal }];
-
-    tableRows.forEach((item, idx) => {
-      const rowH = 24;
-      if (idx % 2 === 1) doc.rect(ML, y, CW, rowH).fill("#F8FBFF");
-
-      doc.fontSize(8).font("Helvetica").fillColor(textDark)
-         .text(String(idx + 1), colSr.x, y + 8, { width: colSr.w, align: "center" });
-      doc.fontSize(8).font("Helvetica").fillColor(textDark)
-         .text(item.description || "Medical Service", colDesc.x + 6, y + 8, { width: colDesc.w - 12 });
-      doc.fontSize(8).font("Helvetica-Bold").fillColor(textDark)
-         .text(Number(item.amount || 0).toFixed(2), colAmt.x, y + 8, { width: colAmt.w, align: "right" });
-
-      y += rowH;
-
-      let breakdown = null;
-      try {
-        breakdown = typeof item.breakdown === "string" ? JSON.parse(item.breakdown) : item.breakdown;
-      } catch { breakdown = null; }
-
-      if (Array.isArray(breakdown) && breakdown.length > 0) {
-        breakdown.forEach((b) => {
-          doc.fontSize(7).font("Helvetica").fillColor(textGray)
-             .text(`  • ${b.label || ""}`, colDesc.x + 12, y + 4, { width: colDesc.w - 18 });
-          doc.fontSize(7).font("Helvetica").fillColor(textGray)
-             .text(Number(b.amount || 0).toFixed(2), colAmt.x, y + 4, { width: colAmt.w, align: "right" });
-          y += 13;
-        });
-      }
-
-      doc.moveTo(ML, y).lineTo(ML + CW, y).strokeColor(borderGray).lineWidth(0.5).stroke();
-      y += 8;
-    });
-
-    y += 6;
-
-    const totX = ML + CW - 220;
-    const valX = ML + CW - 90;
-    const totW = 220;
-    const valW = 90;
-
-    const drawTotalRow = (label, value, bold = false, bg = null, textCol = textDark) => {
-      if (bg) { doc.rect(totX - 6, y - 2, totW + valW + 6, 22).fill(bg); }
-      doc.fontSize(bold ? 10 : 9).font(bold ? "Helvetica-Bold" : "Helvetica").fillColor(textCol)
-         .text(label, totX, y + (bold ? 4 : 5), { width: totW });
-      doc.fontSize(bold ? 10 : 9).font(bold ? "Helvetica-Bold" : "Helvetica").fillColor(textCol)
-         .text(value, valX, y + (bold ? 4 : 5), { width: valW, align: "right" });
-      y += bold ? 26 : 18;
-    };
-
-    drawTotalRow("Subtotal (before GST)",               fmtCurrency(subtotal));
-    drawTotalRow(`GST @ ${gstRate}% (on total amount)`, fmtCurrency(gstAmount), false, null, accentGold);
-    doc.moveTo(totX - 6, y - 2).lineTo(ML + CW, y - 2).strokeColor(borderGray).lineWidth(1).stroke();
-    drawTotalRow("TOTAL PAYABLE (incl. GST)", fmtCurrency(totalAmt), true, "#EEF2FF", brandPrimary);
-
-    y += 8;
-
-    if (inv.is_recurring) {
-      const freq   = inv.recurring_frequency || "monthly";
-      const cycles = inv.recurring_cycles    || "—";
-      const start  = inv.recurring_start_date ? fmtDate(inv.recurring_start_date) : "—";
-
-      doc.rect(ML, y, CW, 28).fillAndStroke("#EDF7F6", accentTeal);
-      doc.fontSize(8).font("Helvetica-Bold").fillColor(accentTeal).text("♻  RECURRING BILLING", ML + 8, y + 6);
-      doc.fontSize(7.5).font("Helvetica").fillColor(textGray)
-         .text(
-           `This is a recurring invoice (${freq.charAt(0).toUpperCase() + freq.slice(1)}). Cycle ${cycles} starting ${start}.`,
-           ML + 8, y + 16,
-           { width: CW - 16 }
-         );
-      y += 36;
-    }
-
-    y += 4;
-    doc.fontSize(8.5).font("Helvetica-Bold").fillColor(textDark).text("Bank Details", ML, y);
-    y += 13;
-
-    [
-      "Account Name : Vasify Technologies Pvt. Ltd.",
-      "Bank         : Axis Bank, M.G. Road, Kandivali West Branch",
-      "Account No   : 924020018276663",
-      "IFSC         : UTIB0001578",
-    ].forEach((line) => {
-      doc.fontSize(8).font("Helvetica").fillColor(textGray).text(line, ML, y);
-      y += 12;
-    });
-
-    if (inv.notes && String(inv.notes).trim()) {
-      y += 6;
-      doc.fontSize(8.5).font("Helvetica-Bold").fillColor(textDark).text("Notes", ML, y);
-      y += 13;
-      doc.fontSize(8).font("Helvetica").fillColor(textGray)
-         .text(String(inv.notes).trim(), ML, y, { width: CW, lineGap: 2 });
-    }
-
-    const footerY = 775;
-    doc.rect(ML, footerY - 8, CW, 1).fill(borderGray);
-    doc.fontSize(8).font("Helvetica").fillColor(textGray)
-       .text(
-         "Thank you for trusting Renalease with your care. For queries, contact: +91-9769754446 | www.renalease.com",
-         ML, footerY,
-         { align: "center", width: CW }
-       );
-    doc.fontSize(7).fillColor("#9CA3AF")
-       .text(
-         `Generated on ${new Date().toLocaleDateString("en-IN")} | This is a computer-generated invoice.`,
-         ML, footerY + 12,
-         { align: "center", width: CW }
-       );
-
-    doc.end();
+    inv.items = items;
+    res.json({ invoice: inv });
   } catch (err) {
-    console.error("PDF generation error:", err);
-    if (!res.headersSent) res.status(500).json({ error: "Failed to generate PDF" });
+    console.error("Get invoice:", err);
+    res.status(500).json({ error: "Failed to fetch invoice" });
   }
 });
 
-// ─── CREATE INVOICE ───────────────────────────────────────────────────────────
+// ─── CREATE ───────────────────────────────────────────────────────────────────
 
 router.post(
   "/",
   authenticateToken,
   [
     body("customerId").notEmpty().withMessage("Customer ID is required"),
-    body("items").isArray({ min: 1 }).withMessage("Items array is required"),
+    body("items").isArray({ min: 1 }).withMessage("At least one item is required"),
   ],
   async (req, res) => {
     if (handleValidation(req, res)) return;
 
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+    const conn = await pool.getConnection();
+    await conn.beginTransaction();
 
     try {
       const {
-        customerId, items, isRecurring, recurringFrequency,
-        recurringCycles, recurringStartDate, recurringEndDate,
+        customerId, items,
+        isRecurring, recurringFrequency, recurringCycles,
+        recurringStartDate, recurringEndDate,
+        customerName, customerEmail, customerPhone, customerCompany, customerAddress,
+        poNumber, terms, placeOfSupply,
       } = req.body;
 
-      const [customers] = await connection.execute(
-        "SELECT id, assigned_to, default_tax_rate, default_due_days, default_invoice_notes FROM customers WHERE id = ?",
+      // Validate customer
+      const [custs] = await conn.execute(
+        `SELECT id, assigned_to, default_tax_rate, default_due_days, default_invoice_notes
+         FROM customers WHERE id = ?`,
         sanitize(customerId)
       );
-      if (!customers.length) {
-        await connection.rollback(); connection.release();
+      if (!custs.length) {
+        await conn.rollback(); conn.release();
         return res.status(400).json({ error: "Customer not found" });
       }
-
-      const customer = customers[0];
-
-      /**
-       * FIX (Bug C-2): was req.user.userId — non-admins always got 403 on
-       * invoice creation because undefined !== customer.assigned_to.
-       */
-      if (req.user.role !== "admin" && customer.assigned_to !== req.user.id) {
-        await connection.rollback(); connection.release();      // ✅ FIXED: req.user.id
+      const cust = custs[0];
+      if (req.user.role !== "admin" && cust.assigned_to !== req.user.id) {
+        await conn.rollback(); conn.release();
         return res.status(403).json({ error: "No permission to invoice this customer" });
       }
 
+      // Financials
       const subtotal  = req.body.amount !== undefined
         ? Number(req.body.amount)
         : items.reduce((s, i) => s + Number(i.amount || 0), 0);
-      const taxRate   = req.body.tax   !== undefined ? Number(req.body.tax)   : Number(customer.default_tax_rate || 0);
+      const taxRate   = req.body.tax !== undefined ? Number(req.body.tax) : Number(cust.default_tax_rate || 18);
       const gstAmt    = (subtotal * taxRate) / 100;
       const total     = req.body.total !== undefined ? Number(req.body.total) : subtotal + gstAmt;
       const status    = req.body.status || "draft";
-      const issueDate = req.body.issueDate ? toSqlDate(req.body.issueDate) : toSqlDate(new Date());
-      const dueDate   = req.body.dueDate
-        ? toSqlDate(req.body.dueDate)
-        : (() => { const d = new Date(); d.setDate(d.getDate() + Number(customer.default_due_days || 30)); return toSqlDate(d); })();
-      const notes = req.body.notes ?? customer.default_invoice_notes ?? null;
+      const issueDate = toSqlDate(req.body.issueDate || new Date());
+      const dueDate   = toSqlDate(req.body.dueDate   || (() => {
+        const d = new Date(); d.setDate(d.getDate() + Number(cust.default_due_days || 5)); return d;
+      })());
+      const notes = req.body.notes ?? cust.default_invoice_notes ?? null;
 
-      const invoiceNumber = await generateRNLNumber(connection);
-      const invoiceId     = uuidv4();
+      // Invoice number: use supplied if valid & unique, else auto-generate
+      let invNum = String(req.body.invoiceNumber || "").trim();
+      if (invNum) {
+        const [dup] = await conn.execute(
+          "SELECT id FROM invoices WHERE invoice_number = ?", sanitize(invNum)
+        );
+        if (dup.length) invNum = await generateInvNumber(conn);
+      } else {
+        invNum = await generateInvNumber(conn);
+      }
 
-      await connection.execute(
+      const invoiceId = uuidv4();
+
+      await conn.execute(
         `INSERT INTO invoices
-           (id, customer_id, invoice_number, amount, tax, total, status,
+           (id, customer_id, invoice_number, amount, tax, gst_amount, total, status,
             issue_date, due_date, notes,
+            po_number, terms, place_of_supply,
+            customer_name_override, customer_email_override,
+            customer_phone_override, customer_company_override, customer_address_override,
             is_recurring, recurring_frequency, recurring_cycles,
             recurring_start_date, recurring_end_date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         sanitize(
-          invoiceId, customerId, invoiceNumber, subtotal, taxRate, total, status,
+          invoiceId, customerId, invNum, subtotal, taxRate, gstAmt, total, status,
           issueDate, dueDate, notes,
+          poNumber        || null,
+          terms           || "due_on_receipt",
+          placeOfSupply   || "Maharashtra (27)",
+          customerName    || null,
+          customerEmail   || null,
+          customerPhone   || null,
+          customerCompany || null,
+          customerAddress || null,
           isRecurring ? 1 : 0,
-          recurringFrequency || null,
-          recurringCycles    ? Number(recurringCycles) : null,
-          recurringStartDate ? toSqlDate(recurringStartDate) : null,
-          recurringEndDate   ? toSqlDate(recurringEndDate)   : null
+          recurringFrequency  || null,
+          recurringCycles     ? Number(recurringCycles) : null,
+          recurringStartDate  ? toSqlDate(recurringStartDate) : null,
+          recurringEndDate    ? toSqlDate(recurringEndDate)   : null
         )
       );
 
       for (const item of items) {
-        await connection.execute(
-          `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, breakdown)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        await conn.execute(
+          `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+           VALUES (?,?,?,?,?,?,?,?)`,
           sanitize(
             uuidv4(), invoiceId,
             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+            item.hsn || "998313",
             item.breakdown ? JSON.stringify(item.breakdown) : null
           )
         );
       }
 
-      await connection.commit();
+      await conn.commit();
 
-      const [[created]] = await connection.execute(
-        `SELECT i.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone
-         FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ?`,
-        sanitize(invoiceId)
-      );
-      const [createdItems] = await connection.execute(
-        "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-        sanitize(invoiceId)
+      const [[created]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(invoiceId));
+      const [createdItems] = await conn.execute(
+        "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(invoiceId)
       );
       created.items = createdItems;
 
       res.status(201).json({ message: "Invoice created successfully", invoice: created });
     } catch (err) {
-      await connection.rollback();
-      console.error("Invoice creation error:", err);
+      await conn.rollback();
+      console.error("Create invoice:", err);
       res.status(500).json({ error: "Failed to create invoice", details: err.message });
     } finally {
-      connection.release();
+      conn.release();
     }
   }
 );
 
-// ─── UPDATE INVOICE ───────────────────────────────────────────────────────────
+// ─── UPDATE ───────────────────────────────────────────────────────────────────
 
 router.put("/:id", authenticateToken, async (req, res) => {
   const { id } = req.params;
 
+  // Existence check first (gives 404 not 403 for missing rows)
+  const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+  if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
   const access = await canAccessInvoice(req, res, id);
   if (!access.ok) return;
 
-  const connection = await pool.getConnection();
-  await connection.beginTransaction();
+  const conn = await pool.getConnection();
+  await conn.beginTransaction();
 
   try {
-    const [existing] = await connection.execute(
-      "SELECT id FROM invoices WHERE id = ?",
-      sanitize(id)
-    );
-    if (!existing.length) {
-      await connection.rollback(); connection.release();
-      return res.status(404).json({ error: "Invoice not found" });
-    }
+    const data = { ...req.body };
 
-    const updateData = { ...req.body };
+    // Auto-set paidDate when marking paid
+    if (data.status === "paid" && !data.paidDate) data.paidDate = toSqlDate(new Date());
 
-    if (updateData.status === "paid" && !updateData.paidDate) {
-      updateData.paidDate = toSqlDate(new Date());
-    }
-    if (updateData.dueDate)            updateData.dueDate            = toSqlDate(updateData.dueDate);
-    if (updateData.issueDate)          updateData.issueDate          = toSqlDate(updateData.issueDate);
-    if (updateData.paidDate)           updateData.paidDate           = toSqlDate(updateData.paidDate);
-    if (updateData.recurringStartDate) updateData.recurringStartDate = toSqlDate(updateData.recurringStartDate);
-    if (updateData.recurringEndDate)   updateData.recurringEndDate   = toSqlDate(updateData.recurringEndDate);
+    // Normalise dates
+    ["issueDate","dueDate","paidDate","recurringStartDate","recurringEndDate"].forEach(k => {
+      if (data[k]) data[k] = toSqlDate(data[k]);
+    });
 
-    const fields = [];
-    const values = [];
-
-    for (const [key, value] of Object.entries(updateData)) {
+    const fields = [], values = [];
+    for (const [key, value] of Object.entries(data)) {
       if (key === "items" || value === undefined) continue;
-      const dbField = invoiceFieldMap[key];
-      if (!dbField) continue;
-      const dbVal = key === "isRecurring" ? (value ? 1 : 0) : value;
-      fields.push(`${dbField} = ?`);
-      values.push(dbVal);
+      const col = FIELD_MAP[key];
+      if (!col) continue;
+      fields.push(`${col} = ?`);
+      values.push(key === "isRecurring" ? (value ? 1 : 0) : (value === "" ? null : value));
     }
 
-    if (fields.length > 0) {
-      values.push(id);
-      await connection.execute(
+    if (fields.length) {
+      await conn.execute(
         `UPDATE invoices SET ${fields.join(", ")}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-        sanitize(...values)
+        sanitize(...values, id)
       );
     }
 
-    if (Array.isArray(updateData.items)) {
-      await connection.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
-      for (const item of updateData.items) {
-        await connection.execute(
-          `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, breakdown)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    if (Array.isArray(data.items)) {
+      await conn.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
+      for (const item of data.items) {
+        await conn.execute(
+          `INSERT INTO invoice_items (id, invoice_id, description, quantity, rate, amount, hsn, breakdown)
+           VALUES (?,?,?,?,?,?,?,?)`,
           sanitize(
             uuidv4(), id,
             item.description, item.quantity || 1, item.rate || 0, item.amount || 0,
+            item.hsn || "998313",
             item.breakdown ? JSON.stringify(item.breakdown) : null
           )
         );
       }
     }
 
-    await connection.commit();
+    await conn.commit();
 
-    const [[updated]] = await connection.execute(
-      `SELECT i.*, c.name AS customer_name, c.email AS customer_email, c.phone AS customer_phone
-       FROM invoices i LEFT JOIN customers c ON i.customer_id = c.id WHERE i.id = ?`,
-      sanitize(id)
+    const [[updated]] = await conn.execute(INV_SELECT + " WHERE i.id = ?", sanitize(id));
+    const [updItems]  = await conn.execute(
+      "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at", sanitize(id)
     );
-    const [updatedItems] = await connection.execute(
-      "SELECT * FROM invoice_items WHERE invoice_id = ? ORDER BY created_at",
-      sanitize(id)
-    );
-    updated.items = updatedItems;
+    updated.items = updItems;
 
     res.json({ message: "Invoice updated successfully", invoice: updated });
   } catch (err) {
-    await connection.rollback();
-    console.error("Invoice update error:", err);
+    await conn.rollback();
+    console.error("Update invoice:", err);
     res.status(500).json({ error: "Failed to update invoice" });
   } finally {
-    connection.release();
+    conn.release();
   }
 });
 
-// ─── DELETE INVOICE ───────────────────────────────────────────────────────────
+// ─── DELETE ───────────────────────────────────────────────────────────────────
 
 router.delete("/:id", authenticateToken, async (req, res) => {
-  const { id }  = req.params;
-  const access  = await canAccessInvoice(req, res, id);
+  const { id } = req.params;
+
+  const [ex] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
+  if (!ex.length) return res.status(404).json({ error: "Invoice not found" });
+
+  const access = await canAccessInvoice(req, res, id);
   if (!access.ok) return;
 
   try {
-    const [existing] = await pool.execute("SELECT id FROM invoices WHERE id = ?", sanitize(id));
-    if (!existing.length) return res.status(404).json({ error: "Invoice not found" });
-
     await pool.execute("DELETE FROM invoice_items WHERE invoice_id = ?", sanitize(id));
     await pool.execute("DELETE FROM invoices WHERE id = ?", sanitize(id));
     res.json({ message: "Invoice deleted successfully" });
   } catch (err) {
-    console.error("Invoice delete error:", err);
+    console.error("Delete invoice:", err);
     res.status(500).json({ error: "Failed to delete invoice" });
   }
 });
