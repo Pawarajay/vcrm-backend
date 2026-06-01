@@ -24,8 +24,8 @@ const dbConfig = {
   connectionLimit: 10,
   queueLimit: 0,
 }
-
-// # mysql://root:duiIZCIaqOMpVlWpMlHjKIRBxwHtbGYt@zephyr.proxy.rlwy.net:50860/railway
+// mysql://root:duiIZCIaqOMpVlWpMlHjKIRBxwHtbGYt@zephyr.proxy.rlwy.net:50860/railway
+// # mysql://root:iGxSfAxEKEscPTUwfsQrpvTzRfCUKXFP@ballast.proxy.rlwy.net:48199/railway
 // const dbConfig = {
 //   host: process.env.DB_HOST || "localhost",
 //   user: process.env.DB_USER || "root",
@@ -53,4 +53,3 @@ async function testConnection() {
 }
 
 module.exports = { pool, testConnection }
-
