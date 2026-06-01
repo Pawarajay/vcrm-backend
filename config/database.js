@@ -15,17 +15,17 @@ require("dotenv").config()
 // root:xwFhUnSPQGmyDMDWWHRIRKevBCXGXrre@gondola.proxy.rlwy.net:35644/railway
 
 const dbConfig = {
-  host: process.env.DB_HOST || "ballast.proxy.rlwy.net",
+  host: process.env.DB_HOST || "zephyr.proxy.rlwy.net",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "iGxSfAxEKEscPTUwfsQrpvTzRfCUKXF",
-  database: process.env.DB_NAME || "vasify_crm",
-  port: process.env.DB_PORT || 48199,
+  password: process.env.DB_PASSWORD || "duiIZCIaqOMpVlWpMlHjKIRBxwHtbGYt",
+  database: process.env.DB_NAME || "railway",
+  port: process.env.DB_PORT || 50860,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
 }
 
-// # mysql://root:iGxSfAxEKEscPTUwfsQrpvTzRfCUKXFP@ballast.proxy.rlwy.net:48199/railway
+// # mysql://root:duiIZCIaqOMpVlWpMlHjKIRBxwHtbGYt@zephyr.proxy.rlwy.net:50860/railway
 // const dbConfig = {
 //   host: process.env.DB_HOST || "localhost",
 //   user: process.env.DB_USER || "root",
