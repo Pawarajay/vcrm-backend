@@ -15,11 +15,11 @@ require("dotenv").config()
 // root:xwFhUnSPQGmyDMDWWHRIRKevBCXGXrre@gondola.proxy.rlwy.net:35644/railway
 
 const dbConfig = {
-  host: process.env.DB_HOST || "zephyr.proxy.rlwy.net",
+  host: process.env.DB_HOST || "acela.proxy.rlwy.net",
   user: process.env.DB_USER || "root",
-  password: process.env.DB_PASSWORD || "duiIZCIaqOMpVlWpMlHjKIRBxwHtbGYt",
+  password: process.env.DB_PASSWORD || "AdmDcUZRvXbCRyPoDdJzvKsyZFqCHCzl",
   database: process.env.DB_NAME || "railway",
-  port: process.env.DB_PORT || 50860,
+  port: process.env.DB_PORT || 11254,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
